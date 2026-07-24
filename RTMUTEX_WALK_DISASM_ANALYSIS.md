@@ -281,3 +281,62 @@ rodata)**. The write not landing is a placement/overlay-content problem at the d
 read-back localizes it in one device run. RVAs: task_blocks_on_rt_mutex 0x1e6a80;
 __rt_mutex_start_proxy_lock 0x1e989c; rt_mutex_cleanup_proxy_lock 0x1e9cd8; remove_waiter 0x1e7204
 (pi_blocked_on clear @0x1e72c4); futex cleanup call @0x292418.
+
+## rt_mutex_adjust_pi early-exit (scratch diag: diffs=0, walk body never runs)
+
+`rt_mutex_adjust_pi` @0x1e9274. Guard disassembly:
+```
+1e92e8 ldr  x8,[x19,#2200]   ; waiter = task->pi_blocked_on (0x898)
+1e92ec cbz  x8, 0x1e9314     ; (A) !waiter -> early return (NO chain walk)
+1e92f0 ldr  w9,[x19,#132]    ; right->prio = task->prio (0x84)  [task_to_waiter uses task->prio directly]
+1e92f4 ldr  w10,[x8,#64]     ; left->prio  = waiter->prio (0x40)
+1e92f8 cmp  w10, w9
+1e92fc b.ne 0x1e9380         ; prio != -> PROCEED (reads next_lock=waiter->lock @0x1e9384, bl adjust_prio_chain @0x1e93e4)
+1e9300 tbz  w9,#31,0x1e9314  ; (B) prio == and task->prio>=0 -> early return
+1e9304 ...deadline compare (dl_prio only)...
+```
+
+### (B) waiter_equal is DISPROVEN
+The consumer does `sched_setattr_tid(tid, nice=19)` with **SCHED_BATCH** (util.c:264-270) ⇒
+`task->prio = 120+19 = 139`. The fake `wake_prio` word `(130<<32)|3` ⇒ `waiter->prio(@0x40)=3`.
+`3 ≠ 139` ⇒ 0x1e92fc `b.ne` is taken ⇒ **the guard PROCEEDS to the chain walk**. So the early-exit is
+NOT `rt_mutex_waiter_equal`.
+
+### The chain walk, if entered, reaches the dequeue — verified exhaustively
+For the overlay/payload-intended state every branch from `rt_mutex_adjust_prio_chain` entry to
+`rt_mutex_dequeue` PASSES: next_lock==waiter->lock (0x1e79b8); trylock fake_lock->wait_lock=0 succeeds
+(0x1e8ff0 CAS, net-zero); lock!=orig_lock (0x1e7c54); rt_mutex_owner(fake_lock)=fake_task ≠ top_task
+(0x1e7c68); w26=1 ⇒ requeue-needed (0x1e7c74); prerequeue `BUG_ON(fake_w0->lock!=fake_lock)` — target
+0x1e8f80 is **`brk #0x800`** (would crash) but the device SURVIVES and `put_p9_fops_waiter` sets
+`fake_w0->lock=fake_lock`, so it passes; then rb_erase Case-2 writes `*write_target`. ⇒ if the chain
+walk ran, the scratch WOULD change.
+
+### Conclusion: (A) `!waiter` — pi_blocked_on is NULL when the consumer walks it
+`diffs=0` + waiter_equal-disproven + no static early-exit before the dequeue ⇒ the chain walk is not
+being entered at all: `rt_mutex_adjust_pi` returns at **`cbz x8,0x1e9314` (0x1e92ec)** because
+`task->pi_blocked_on == NULL`. i.e. the requeue-PI + timeout cleanup CLEARED the waiter's pi_blocked_on
+before the consumer's sched_setattr ran. (Confirming machinery: on the requeued-timeout path
+`futex_wait_requeue_pi` calls `rt_mutex_cleanup_proxy_lock` @0x292418 → `remove_waiter` which does
+`str xzr,[x20,#2200]` @0x1e72c4 = `current->pi_blocked_on=NULL`.) The earlier shift-dependent crash is
+consistent with this being RACY: sometimes the dangling pointer survives to the walk (mis-aligned →
+crash at shift0), most runs it's already cleared (diffs=0, survive at shift-2). Reliable exploitation
+needs the dangling pointer to exist *at the moment the chain is walked*.
+
+### FIX (single, highest-confidence): re-introduce the SIGALRM signal-interrupt (popsicle/duchamp)
+The dangling `pi_blocked_on` must be created by **interrupting the requeue-PI waiter with a signal**
+while it is blocked in `rt_mutex_wait_proxy_lock`, and doing the priority bump from inside the handler,
+so the futex returns via EINTR (leaving the waiter enqueued / pi_blocked_on set) instead of the clean
+timeout/cleanup path that NULLs it. Concretely (as the working duchamp build did, dropped by the oppo
+base):
+  - waiter thread installs a SIGALRM handler (sigaction, **SA_RESTART cleared**) that calls
+    `setpriority(PRIO_PROCESS, 0, N)`.
+  - ~50 ms after `FUTEX_CMP_REQUEUE_PI`, the driver does `pthread_kill(waiter_tid, SIGALRM)`.
+  - The handler's setpriority → __sched_setscheduler → rt_mutex_adjust_pi runs the chain WHILE
+    pi_blocked_on is still set → the dangling waiter is created; then the (mis)aligned pselect overlay
+    reclaim + the consumer walk drive the rb-erase write.
+This matches HANDOFF §2A which documents SIGALRM+setpriority as the ONLY reliable way to generate the
+dangling rt_mutex_waiter. Rank: (1) re-add SIGALRM [high]; (2) if diffs stays 0, verify the scratch
+diag actually redirected tree_left and that the recv reads the scratch offset (rule out an MTE
+async-drop by using a 0xff-tagged write_target). RVAs: adjust_pi guard 0x1e92ec/0x1e92fc/0x1e9300;
+remove_waiter pi_blocked_on clear 0x1e72c4; cleanup_proxy_lock call 0x292418; prerequeue BUG brk
+0x1e8f80.

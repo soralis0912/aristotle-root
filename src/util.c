@@ -534,7 +534,10 @@ void close_reclaim_sockets(void) {
 }
 
 int scratch_write_diag_enabled(void) {
-  return env_flag("SCRATCH_WRITE_DIAG", 1);
+  /* Default OFF now: the write goes to the real &ashmem_misc.fops swap target and
+   * we must NOT recv/free page_base (fake_fops lives there). Set SCRATCH_WRITE_DIAG=1
+   * to re-enable the redirect+sk_buff-recv diagnostic. */
+  return env_flag("SCRATCH_WRITE_DIAG", 0);
 }
 
 /*
