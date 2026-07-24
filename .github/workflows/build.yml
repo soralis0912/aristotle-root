@@ -28,25 +28,25 @@ jobs:
 
       - name: Build preload.so
         run: |
-          make PROJECT=duchamp \
+          make PROJECT=aristotle \
             CC=/opt/ndk-r29/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android35-clang
 
       - name: Verify
         run: |
-          file build/duchamp/bin/preload.so
-          sha256sum build/duchamp/bin/preload.so
+          file build/aristotle/bin/preload.so
+          sha256sum build/aristotle/bin/preload.so
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: preload-duchamp-aarch64
-          path: build/duchamp/bin/preload.so
+          name: preload-aristotle-aarch64
+          path: build/aristotle/bin/preload.so
 
       - name: Upload to release (manual)
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
-          files: build/duchamp/bin/preload.so
+          files: build/aristotle/bin/preload.so
 
   autorelease:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -65,7 +65,7 @@ jobs:
       - name: Download build
         uses: actions/download-artifact@v4
         with:
-          name: preload-duchamp-aarch64
+          name: preload-aristotle-aarch64
           path: .
 
       - name: Create or update release

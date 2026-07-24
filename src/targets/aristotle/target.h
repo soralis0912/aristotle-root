@@ -1,8 +1,22 @@
 #ifndef TARGET_H
 #define TARGET_H
 
-#define BUILD_VARIANT_LABEL "duchamp_OS3.0.303.0.WNLCNXM_16.0"
-#define BUILD_FINGERPRINT "Xiaomi/duchamp/duchamp:16/OS3.0.303.0.WNLCNXM/15430684:user/release-keys"
+/* aristotle (au/KDDI Xiaomi XIG04, MT6895 Dimensity 8100, Android 12,
+ * kernel 5.10.136-android12-9).
+ *
+ * ⚠ WIP: the numeric offsets below are still inherited from the duchamp base
+ * (MT6897, kernel 6.1.138) and are PLACEHOLDERS. They must be replaced with the
+ * measured aristotle 5.10 values before this target can work:
+ *   - physical/base constants + symbol RVAs: see the measured set in
+ *     ../../../CVE-2026-43499-aristotle/aristotle_target.h and the kallsyms
+ *     extractor scratchpad/symdump.py (kernel at
+ *     lks/aristotle/aristotle_XIG04_images_.../images/boot.img).
+ *   - rt_mutex_waiter is 5.10 FLAT (10 words, no wake_state/ww_ctx), not the
+ *     6.1 nested layout — the slide-leak word table must be re-derived so the
+ *     rb_erase takes a ROTATION path (see SLIDE_LEAK_DISASM_ANALYSIS.md).
+ */
+#define BUILD_VARIANT_LABEL "aristotle_V14.0.3.0.TMFJPKD_12.0"
+#define BUILD_FINGERPRINT "Xiaomi/XIG04_jp_kdi/XIG04:12/SP1A.210812.016/V14.0.3.0.TMFJPKD:user/release-keys"
 
 #define KIMAGE_TEXT_BASE 0xffffffc008000000ULL
 #define P0_PAGE_OFFSET 0xffffff8000000000ULL

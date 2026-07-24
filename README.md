@@ -5,23 +5,28 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Colorful-glassblock/duchamp-root">
-    <img src="https://readme-typing-svg.demolab.com?font=JetBrains+Mono&size=28&pause=800&color=00FF88&center=true&vCenter=true&width=700&lines=duchamp-root+%F0%9F%94%93;Xiaomi+K70e+%28duchamp%29+One-Click+Root;CVE-2026-43499+%28IonStack%29+Exploit;710%E8%A7%A3%E9%94%81%E8%8A%82%E6%9C%80%E6%96%B0%E5%8A%9B%E4%BD%9C+%F0%9F%94%A5"/>
+  <a href="https://github.com/soralis0912/aristotle-root">
+    <img src="https://readme-typing-svg.demolab.com?font=JetBrains+Mono&size=28&pause=800&color=00FF88&center=true&vCenter=true&width=700&lines=aristotle-root+%F0%9F%94%93;au%2FKDDI+XIG04+%28aristotle%29+One-Click+Root;CVE-2026-43499+%28IonStack%29+Exploit;710%E8%A7%A3%E9%94%81%E8%8A%82%E6%9C%80%E6%96%B0%E5%8A%9B%E4%BD%9C+%F0%9F%94%A5"/>
   </a>
 </p>
 
 <p align="center">
-  <img width="20%" src="https://count.getloli.com/@duchamp-root?name=duchamp-root&theme=random&padding=7&offset=0&align=top&scale=1&pixelated=1&darkmode=auto" alt="visitor counter" />
+  <img width="20%" src="https://count.getloli.com/@aristotle-root?name=aristotle-root&theme=random&padding=7&offset=0&align=top&scale=1&pixelated=1&darkmode=auto" alt="visitor counter" />
 </p>
 
 ---
 
-![GitHub release (latest by date)](https://img.shields.io/github/v/release/Colorful-glassblock/duchamp-root?label=release&color=00FF88)
-![GitHub last commit](https://img.shields.io/github/last-commit/Colorful-glassblock/duchamp-root?label=last%20commit)
-![Platform](https://img.shields.io/badge/platform-MTK6897%2FMT6897%20%28Dimensity%208300%29-blue)
-![Android](https://img.shields.io/badge/Android-16%20%28API%2036%29-green)
-![Kernel](https://img.shields.io/badge/Kernel-6.1.138--android14--11-orange)
+![GitHub release (latest by date)](https://img.shields.io/github/v/release/soralis0912/aristotle-root?label=release&color=00FF88)
+![GitHub last commit](https://img.shields.io/github/last-commit/soralis0912/aristotle-root?label=last%20commit)
+![Platform](https://img.shields.io/badge/platform-MT6895%20%28Dimensity%208100%29-blue)
+![Android](https://img.shields.io/badge/Android-12%20%28API%2031%29-green)
+![Kernel](https://img.shields.io/badge/Kernel-5.10.136--android12--9-orange)
 ![License](https://img.shields.io/badge/license-GPLv3-blue)
+
+> 🙏 **Based on [duchamp-root](https://github.com/Colorful-glassblock/duchamp-root)** by Colorful-glassblock.
+> This is an **aristotle** port (au/KDDI Xiaomi XIG04, MT6895, kernel 5.10.136-android12-9).
+> All CVE-2026-43499 exploit-technique credit goes to the upstream project:
+> https://github.com/Colorful-glassblock/duchamp-root
 
 > ⚡ **Proud user of JetBrains Mono** ⚡  
 > This README uses JetBrains Mono exclusively. Comic Sans is forbidden.
@@ -32,7 +37,7 @@
 > This exploit is for **educational purposes only**.
 > - Unlocking bootloader may void your warranty.
 > - Rooting your device may cause bootloop, data loss, or spontaneous combustion (probably not, but who knows).
-> - I am not responsible if your K70e turns into a K70 brick.
+> - I am not responsible if your XIG04 turns into a XIG04 brick.
 > - If your girlfriend leaves you because you spent too much time rooting, that's a you problem.
 > - **7̷̋̚1̸̽̈́0̵̛̅ ̸͛̿ù̶̈́n̸̓̋l̸̔̒o̸̔̒c̸̾̑k̵̇̚ ̷̊̒ḟ̷͝e̶̋̕s̵̋̚t̸̽̈́ ̵̔̋l̶̔̒e̸̓̋t̸̔̒s̵̋̚ ̸̾̑ġ̷̝o̷̊̒ ̵̛̅ḟ̷͝u̸̓̋c̷̋̚k̸̛̅i̶̽̈́n̵̔̋g̷̊̒ ̴͛̿g̶̾̑ơ̵̅**
 
@@ -43,12 +48,12 @@
 ## 📖 中文版
 
 <p align="center">
-  <img src="https://readme-typing-svg.demolab.com?font=JetBrains+Mono&size=24&pause=800&color=FF8800&center=true&vCenter=true&width=600&lines=710%E8%A7%A3%E9%94%81%E8%8A%82%E6%9C%80%E6%96%B0%E5%8A%9B%E4%BD%9C+%F0%9F%94%A5;%E5%B0%8F%E7%B1%B3+K70e+%E4%B8%80%E9%94%AE+Root;%E4%B8%8D%E6%98%AF%E5%9C%A8%E8%A7%A3%E9%94%81%EF%BC%8C%E6%98%AF%E5%9C%A8%E8%A7%A3%E6%94%BE"/>
+  <img src="https://readme-typing-svg.demolab.com?font=JetBrains+Mono&size=24&pause=800&color=FF8800&center=true&vCenter=true&width=600&lines=710%E8%A7%A3%E9%94%81%E8%8A%82%E6%9C%80%E6%96%B0%E5%8A%9B%E4%BD%9C+%F0%9F%94%A5;%E5%B0%8F%E7%B1%B3+XIG04+%E4%B8%80%E9%94%AE+Root;%E4%B8%8D%E6%98%AF%E5%9C%A8%E8%A7%A3%E9%94%81%EF%BC%8C%E6%98%AF%E5%9C%A8%E8%A7%A3%E6%94%BE"/>
 </p>
 
 ### 🤔 这是什么
 
-**Xiaomi K70e (duchamp)** 一键 Root 工具，基于 **CVE-2026-43499 (IonStack)** 内核漏洞提权，集成 **KernelSU** 守护进程。
+**au/KDDI XIG04 (aristotle)** 一键 Root 工具，基于 **CVE-2026-43499 (IonStack)** 内核漏洞提权，集成 **KernelSU** 守护进程。
 
 **通俗版**：你点一下，手机就 root 了。就这么简单。
 
@@ -62,7 +67,7 @@
 
 | 设备 | 代号 | 芯片 | 内核版本 | 状态 |
 |------|------|------|----------|:----:|
-| Redmi K70E | **duchamp** | MT6897 (Dimensity 8300) | 6.1.138-android14-11 | ✅ |
+| au/KDDI XIG04 | **aristotle** | MT6895 (Dimensity 8100) | 5.10.136-android12-9 | ✅ |
 
 > 其它机型见 `src/targets/` 目录（原项目包含的参考配置，未实际验证）。
 
@@ -84,7 +89,7 @@
 
 **710 解锁节**
 ```
-用户: "我的 K70e 能解锁吗？"
+用户: "我的 XIG04 能解锁吗？"
 我:   "不用解锁，直接 root。"
 用户: "？？？"
 我:   "w 710"
@@ -138,7 +143,7 @@ ksud: "我是嵌入在 preload.so 里的。"
 ### 📦 使用方式
 
 #### 前置条件
-- Xiaomi K70e (duchamp) 或其它支持的设备
+- au/KDDI XIG04 (aristotle) 或其它支持的设备
 - 已解锁 Bootloader（或不解锁的临时 root 也支持）
 - ADB 调试已开启
 - 一个不怕变砖的勇气
@@ -147,7 +152,7 @@ ksud: "我是嵌入在 preload.so 里的。"
 
 ```bash
 # 从 Release 下载 preload.so
-wget https://github.com/Colorful-glassblock/duchamp-root/releases/download/v1.0/preload.so
+wget https://github.com/soralis0912/aristotle-root/releases/download/v1.0/preload.so
 
 # 推送到设备
 adb push preload.so /data/local/tmp/
@@ -163,9 +168,9 @@ su -c "LD_PRELOAD=/data/local/tmp/preload.so your_app"
 
 ```bash
 # 需要 NDK 或 Termux 的 aarch64-linux-android-clang
-make PROJECT=duchamp
+make PROJECT=aristotle
 
-# 输出在 build/duchamp/bin/preload.so
+# 输出在 build/aristotle/bin/preload.so
 ```
 
 ---
@@ -191,8 +196,8 @@ make PROJECT=duchamp
     ├── common.h                  # 全局常量 + 函数声明
     ├── kernelsnitch/             # Kernelsnitch 绕过
     └── targets/
-        ├── duchamp/
-        │   └── target.h          # duchamp 专属偏移
+        ├── aristotle/
+        │   └── target.h          # aristotle 专属偏移
         ├── blazer-CP2A.260605.012/
         ├── caiman-CP2A.260605.012.C1/
         ├── comet-CP2A.260605.012.C1/
@@ -265,12 +270,12 @@ A: はいはいわかりました草
 ## 📖 English
 
 <p align="center">
-  <img src="https://readme-typing-svg.demolab.com?font=JetBrains+Mono&size=24&pause=800&color=00FF88&center=true&vCenter=true&width=600&lines=710+Unlock+Festival+Latest+Masterpiece+%F0%9F%94%A5;Xiaomi+K70e+One-Click+Root;It%27s+not+unlocking%2C+it%27s+liberating"/>
+  <img src="https://readme-typing-svg.demolab.com?font=JetBrains+Mono&size=24&pause=800&color=00FF88&center=true&vCenter=true&width=600&lines=710+Unlock+Festival+Latest+Masterpiece+%F0%9F%94%A5;Xiaomi+XIG04+One-Click+Root;It%27s+not+unlocking%2C+it%27s+liberating"/>
 </p>
 
 ### 🤔 What is This
 
-**Xiaomi K70e (duchamp)** one-click root tool based on **CVE-2026-43499 (IonStack)** kernel exploit, integrated with **KernelSU** daemon.
+**au/KDDI XIG04 (aristotle)** one-click root tool based on **CVE-2026-43499 (IonStack)** kernel exploit, integrated with **KernelSU** daemon.
 
 **Casual version**: Click, root, done.
 
@@ -284,7 +289,7 @@ A: はいはいわかりました草
 
 | Device | Codename | SoC | Kernel | Status |
 |--------|----------|-----|--------|:------:|
-| Redmi K70E | **duchamp** | MT6897 (Dimensity 8300) | 6.1.138-android14-11 | ✅ |
+| au/KDDI XIG04 | **aristotle** | MT6895 (Dimensity 8100) | 5.10.136-android12-9 | ✅ |
 
 > Other devices under `src/targets/` are reference configs from the original project, not verified.
 
@@ -306,7 +311,7 @@ A: はいはいわかりました草
 
 **710 Festival**
 ```
-User: "Can I unlock my K70e?"
+User: "Can I unlock my XIG04?"
 Dev:  "No need to unlock, just root."
 User: "???"
 Dev:  "w 710"
@@ -360,7 +365,7 @@ Dev:  "710 is a Xiaomi 14 codename, not iPhone 14. Get out."
 ### 📦 Usage
 
 #### Prerequisites
-- Xiaomi K70e (duchamp) or other supported device
+- au/KDDI XIG04 (aristotle) or other supported device
 - Unlocked bootloader (or not — LD_PRELOAD works either way)
 - ADB debugging enabled
 - A brave soul
@@ -369,7 +374,7 @@ Dev:  "710 is a Xiaomi 14 codename, not iPhone 14. Get out."
 
 ```bash
 # Download preload.so from Releases
-wget https://github.com/Colorful-glassblock/duchamp-root/releases/download/v1.0/preload.so
+wget https://github.com/soralis0912/aristotle-root/releases/download/v1.0/preload.so
 
 # Push to device
 adb push preload.so /data/local/tmp/
@@ -383,9 +388,9 @@ LD_PRELOAD=/data/local/tmp/preload.so your_app
 
 ```bash
 # Requires NDK or Termux aarch64-linux-android-clang
-make PROJECT=duchamp
+make PROJECT=aristotle
 
-# Output at build/duchamp/bin/preload.so
+# Output at build/aristotle/bin/preload.so
 ```
 
 ---
