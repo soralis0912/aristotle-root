@@ -202,7 +202,13 @@ uint32_t __futex_hash(futex_key_t *key, uint32_t futex_hashsize)
 unsigned long futex_hashsize = (unsigned long)-1;
 void futex_init(void)
 {
-    futex_hashsize = SYSCHK(sysconf(_SC_NPROCESSORS_ONLN) * 256);
+    /* Kernel: futex_hashsize = roundup_pow_of_two(nr_cpu_ids * 256)
+       nr_cpu_ids=8 (cpu possible 0-7) → 8*256=2048, roundup=2048 */
+    unsigned long cpus = sysconf(_SC_NPROCESSORS_ONLN);
+    unsigned long raw = cpus * 256;
+    unsigned long result = 1;
+    while (result < raw) result <<= 1;
+    futex_hashsize = result;
 }
 uint32_t futex_hash(size_t addr, size_t mm)
 {

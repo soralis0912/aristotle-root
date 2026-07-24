@@ -22,8 +22,11 @@ CORE_SRCS := \
   $(call pick_src,slide.c) \
   $(call pick_src,fops.c) \
   $(call pick_src,pipe.c) \
-  src/root.c
-PRELOAD_SRCS := $(CORE_SRCS) src/preload.c src/ksud_blob.S
+  src/root.c \
+  src/heap_spray.c
+# ghostlock/oppo lineage: embed a built su_daemon (su_blob.S) + wallpaper.
+PRELOAD_SRCS := $(CORE_SRCS) src/preload.c src/su_blob.S src/wallpaper_blob.S
+EMBED_SU := $(EMBEDDIR)/su_daemon_aarch64_pie
 
 .DEFAULT_GOAL := preload
 
@@ -93,7 +96,12 @@ $(OUTDIR):
 $(EMBEDDIR):
 	mkdir -p $@
 
-$(PRELOAD): $(PRELOAD_SRCS) $(TARGET_HEADER) src/offset.h src/common.h src/kernelsnitch/*.h | $(OUTDIR)
+# su_blob.S .incbin's build/embed/su_daemon_aarch64_pie (relative to repo root),
+# and wallpaper_blob.S .incbin's assets/wallpaper.webp — both must exist first.
+$(EMBED_SU): src/su_daemon.c | $(EMBEDDIR)
+	$(TARGET_CC) $(TARGET_FLAGS) -O2 -fPIE -pie $< $(TARGET_PIE_LDFLAGS) -o $@
+
+$(PRELOAD): $(PRELOAD_SRCS) $(EMBED_SU) assets/wallpaper.webp $(TARGET_HEADER) src/offset.h src/common.h src/kernelsnitch/*.h | $(OUTDIR)
 	$(TARGET_CC) $(TARGET_FLAGS) $(SO_CFLAGS) $(WARN_CFLAGS) $(TARGET_CFLAGS) \
 	  $(PRELOAD_SRCS) $(TARGET_COMMON_LDFLAGS) \
 	  -shared -o $@ -pthread

