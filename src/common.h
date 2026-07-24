@@ -143,7 +143,15 @@
 
 #define CONSUMER_CORE (CORE + 1)
 #define CONSUMER_MAX_CALLS 1
-#define PSELECT_ROUTE_NFDS 640
+/* MUST keep the pselect fdset ON THE KERNEL STACK so it aliases (reclaims) the
+ * freed rt_mutex_waiter that task->pi_blocked_on dangles at after CMP_REQUEUE_PI.
+ * core_sys_select uses stack_fds[256] and heap-allocates when 6*FDS_BYTES(nfds) > 256.
+ *   nfds=320 -> FDS_BYTES=40, 6*40=240 <= 256 -> STACK (overlay words land at longs 2..12)
+ *   nfds=384+ -> heap (kmalloc-512) -> CANNOT alias the stack waiter -> wild pi_blocked_on
+ *               deref -> kernel Oops/reboot.
+ * Was erroneously bumped 320->640 in the oppo-ghostlock swap (b84f75a); 320 is the
+ * original working value and the largest nfds that still fits on the select stack. */
+#define PSELECT_ROUTE_NFDS 320
 #define PSELECT_CONSUMER_NICE 19
 #define PSELECT_CONSUMER_BURST_CALLS 1
 #define PSELECT_ENTER_DELAY_USEC 50000
