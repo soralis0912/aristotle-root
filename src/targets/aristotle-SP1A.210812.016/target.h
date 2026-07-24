@@ -166,9 +166,9 @@
 #define TASK_TGID_OFF 0x61c          /* WARN: verify */
 #define TASK_REAL_PARENT_OFF 0x628   /* WARN: verify */
 #define TASK_ATOMIC_FLAGS_OFF 0x5d8  /* WARN: verify */
-#define TASK_REAL_CRED_OFF 0x778     /* MEASURED */
-#define TASK_CRED_OFF 0x780          /* MEASURED */
-#define TASK_COMM_OFF 0x830          /* WARN: verify */
+#define TASK_REAL_CRED_OFF 0x778     /* MEASURED + gdb-verified (init_task->real_cred==init_cred) */
+#define TASK_CRED_OFF 0x780          /* MEASURED + gdb-verified (init_task->cred==init_cred) */
+#define TASK_COMM_OFF 0x790          /* gdb-verified: "swapper/0" @ init_task+0x790 (was 0x830 duchamp) */
 #define TASK_TASKS_OFF 0x550         /* WARN: verify */
 #define TASK_THREAD_INFO_FLAGS_OFF 0x00
 #define TASK_SECCOMP_OFF 0x8e8       /* WARN: verify */
