@@ -4,7 +4,7 @@
 /* aristotle (au/KDDI XIG04, MT6895, Android 12, kernel 5.10.136-android12-9).
  * Generated from the oppo-ghostlock (5.10.236) target.h template; device values
  * replaced with aristotle MEASURED kallsyms + gdb-verified struct offsets.
- * WARN: (1) P0_KERNEL_PHYS_LOAD delta assumed 0 — verify (prime leak suspect);
+ * NOTE: (1) P0_KERNEL_PHYS_LOAD delta=0 CONFIRMED (vendor_boot kernel_addr==/memory base==0x40000000, Image flags bit3=0, text_offset=0);
  * (2) TASK_PID/TGID/REAL_PARENT/ATOMIC_FLAGS/TASKS/SECCOMP kept from oppo 5.10.236
  *     and NOT yet verified for 5.10.136 (verify via qemu/ gdb);
  * (3) SLIDE_RANDOM_BOOT_ID_DATA from the popsicle-era measurement (verify). */
@@ -16,7 +16,7 @@
 #define KIMAGE_TEXT_BASE 0xffffffc010000000ULL  /* vmlinux-to-elf _text */
 #define P0_PAGE_OFFSET 0xffffff8000000000ULL   /* 39-bit VA direct map */
 #define P0_PHYS_OFFSET 0x40000000ULL
-#define P0_KERNEL_PHYS_LOAD 0x40000000ULL      /* WARN: delta 0 ASSUMED (not verified) — prime leak suspect */
+#define P0_KERNEL_PHYS_LOAD 0x40000000ULL      /* delta 0 CONFIRMED: vendor_boot kernel_addr==/memory base==0x40000000; Image flags bit3=0 (fixed load @DRAM base), text_offset=0 */
 #define KERNELSNITCH_IDENTITY_START 0xffffff8000000000ULL  /* 39-bit VA direct map start */
 #define KERNELSNITCH_IDENTITY_END 0xffffffc000000000ULL    /* 39-bit VA direct map end (16GB) */
 #define DIRECT_MAP_BASE 0xffffff8000000000ULL
