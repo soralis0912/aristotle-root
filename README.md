@@ -168,9 +168,9 @@ su -c "LD_PRELOAD=/data/local/tmp/preload.so your_app"
 
 ```bash
 # 需要 NDK 或 Termux 的 aarch64-linux-android-clang
-make PROJECT=aristotle
+make PROJECT=aristotle-SP1A.210812.016
 
-# 输出在 build/aristotle/bin/preload.so
+# 输出在 build/aristotle-SP1A.210812.016/bin/preload.so
 ```
 
 ---
@@ -196,7 +196,7 @@ make PROJECT=aristotle
     ├── common.h                  # 全局常量 + 函数声明
     ├── kernelsnitch/             # Kernelsnitch 绕过
     └── targets/
-        ├── aristotle/
+        ├── aristotle-SP1A.210812.016/
         │   └── target.h          # aristotle 专属偏移
         ├── blazer-CP2A.260605.012/
         ├── caiman-CP2A.260605.012.C1/
@@ -388,9 +388,9 @@ LD_PRELOAD=/data/local/tmp/preload.so your_app
 
 ```bash
 # Requires NDK or Termux aarch64-linux-android-clang
-make PROJECT=aristotle
+make PROJECT=aristotle-SP1A.210812.016
 
-# Output at build/aristotle/bin/preload.so
+# Output at build/aristotle-SP1A.210812.016/bin/preload.so
 ```
 
 ---
