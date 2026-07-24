@@ -91,3 +91,59 @@ rt_mutex_adjust_prio_chain 0x1e78bc; dequeue rb_erase call 0x1e7d84; enqueue rb_
 owner branch 0x1e8240; owner<=1 clean exit 0x1e8ca0; setprio call 0x1e898c; rt_mutex_setprio 0x19ff4c;
 setprio early-exit test 0x1a0244→ret 0x1a0478; rb_erase 0xa82150; __rb_erase_color 0xa82728;
 rb_insert_color 0xa81f80.
+
+## Reclaim alignment / WORD_SHIFT (device log: nfds=320, on-stack, walk faults @attempt1 shift0)
+
+Device confirmed the walk analysis: `CMP_REQUEUE_PI errno=35(EDEADLK)`, `WAIT_REQUEUE_PI
+errno=110(ETIMEDOUT)` **still leaves `task->pi_blocked_on` dangling** (the walk ran → Oops during
+pselect). With nfds=320 the pselect fdset is on the kernel stack (`words_per_set=5`, 6·40=240 B ≤
+stack_fds[256]), so it can alias the freed `rt_waiter`. The fault is pure MIS-ALIGNMENT.
+
+### Same-thread VMAP_STACK reuse — frame summing
+Both syscalls enter at the identical divergence sp (`SP_DIV`, the indirect call in invoke_syscall;
+`__arm64_sys_futex(regs)` and `__arm64_sys_pselect6(regs)` are both called there). `bl` doesn't move
+sp and the intermediate helpers are inlined (no `do_pselect6`/`__se_sys_*` symbols, no extra frames),
+so only prologue `sub sp,sp,#N` count. Object addresses are taken from the `add xN,sp,#imm` that
+feeds the callee that consumes them.
+
+FUTEX path (rt_waiter):
+- `__arm64_sys_futex` 0x297068: `sub sp,#0x90`; `bl do_futex` @0x297114.
+- `do_futex` 0x28d7d4: `sub sp,#0x70`; `bl futex_wait_requeue_pi` @0x28d888.
+- `futex_wait_requeue_pi` 0x292110: `sub sp,#0x1a0`. rt_waiter @ **sp+0x90** — proven twice:
+  `rt_mutex_wait_proxy_lock`(0x1e9b24) arg x2 = `add x2,sp,#0x90` @0x2923bc; and
+  `rt_mutex_cleanup_proxy_lock`(0x1e9cd8) arg x1 = `add x1,sp,#0x90` @0x292410.
+- rt_waiter_addr = SP_DIV − (0x90+0x70+0x1a0) + 0x90 = SP_DIV − **0x210**.
+
+PSELECT path (stack_fds):
+- `__arm64_sys_pselect6` 0x572410: `sub sp,#0xa0`; `bl core_sys_select` @0x5725b8 (do_pselect6 inlined).
+- `core_sys_select` 0x570edc: `sub sp,#0x1c0`. small-nfds branch → `add x23,sp,#0x50` @0x571070 =
+  `bits=&stack_fds`; confirmed by `fds.in/out/ex/res_* = x23 + k·size` (@0x57107c..0x5710a8) and
+  `fds` struct stored @sp+0x20, passed to `do_select`(0x5716a8) @0x5711b8.
+- stack_fds_addr = SP_DIV − (0xa0+0x1c0) + 0x50 = SP_DIV − **0x210**.
+
+### Result
+`rt_waiter_addr == stack_fds_addr == SP_DIV − 0x210` (exactly). The fake waiter currently starts at
+`stack_fds + 0x10` (global word 2), i.e. 0x10 (two longs) ABOVE the freed rt_waiter. So the walk reads
+waiter fields 0x10 high — e.g. it reads `waiter->lock` from `rt_waiter+0x48` instead of `+0x38`,
+`waiter->task` from `+0x40` instead of `+0x30` — garbage → fault at 0x1e79b0/0x1e7a44.
+
+**PSELECT_WAITER_WORD_SHIFT = −2** (move the fake-waiter base from long 2 to long 0 = stack_fds+0).
+Formula: shift = (D_stackfds − D_rtw − 0x10)/8 = (0x210 − 0x210 − 0x10)/8 = −2.
+
+Wiring note: the current `fops.c prepare_pselect_fdsets` uses FIXED word indices {2..12} and
+`pselect_put_waiter_word` sets `global_word = waiter_word` — PSELECT_WAITER_WORD_SHIFT is NOT applied.
+Apply it: `global_word = waiter_word + PSELECT_WAITER_WORD_SHIFT` (or hardcode indices {0..10}). All 11
+words then occupy longs 0..10 (bytes 0x00..0x58) — inside the 240-byte (30-long) select buffer. OK.
+
+### Exit-path independence (Q3)
+rt_waiter is a fixed stack local (fwrp sp+0x90) regardless of timeout vs EINTR/signal exit, so the
+shift is the same either way — refoot: −2. The device log proves the ETIMEDOUT(110) path already
+leaves pi_blocked_on dangling AND runs the walk, so NO pthread_kill(SIGALRM) is needed. (If a signal
+exit were ever used, it would NOT change rt_waiter's offset, hence not the shift.)
+
+### Confidence / ranked candidates
+Every number is from a clean single-`sub sp` prologue plus an `add xN,sp,#imm` arg-setup, so **−2 is
+high confidence**. If any one frame is mis-read by a single 8-byte slot, the next candidates (test in
+this order, fewest reboots): **−2**, then −1, −3, then 0/−4. Constraint: keep shift ≥ −2 so global
+word 0 (tree_pc) stays ≥ 0; a more-negative shift underflows the buffer (words <0 dropped → broken
+overlay, exactly the earlier `cannot place tree_pc` symptom).
