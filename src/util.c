@@ -428,10 +428,13 @@ void put32(unsigned char *p, size_t off, uint32_t value) {
 void put_fake_fops_table(unsigned char *p, size_t off) {
   put64(p, off + FOPS_OWNER_OFF, 0);
   put64(p, off + FOPS_LLSEEK_OFF, fake_w0 + WAITER_PI_TREE_ENTRY_OFF);
-  put64(p, off + FOPS_READ_OFF, 0);
-  put64(p, off + FOPS_WRITE_OFF, 0);
-  put64(p, off + FOPS_READ_ITER_OFF, text_addr(CONFIGFS_READ_ITER));
-  put64(p, off + FOPS_WRITE_ITER_OFF, text_addr(CONFIGFS_BIN_WRITE_ITER));
+  /* aristotle configfs bin files dispatch via .read/.write (configfs_read_bin_file
+   * / configfs_write_bin_file); the _iter slots are NULL. Setting .write also
+   * makes the swapped fd get FMODE_CAN_WRITE at open so pwrite is allowed. */
+  put64(p, off + FOPS_READ_OFF, text_addr(CONFIGFS_READ_BIN));
+  put64(p, off + FOPS_WRITE_OFF, text_addr(CONFIGFS_WRITE_BIN));
+  put64(p, off + FOPS_READ_ITER_OFF, 0);
+  put64(p, off + FOPS_WRITE_ITER_OFF, 0);
   put64(p, off + FOPS_IOCTL_OFF, text_addr(ASHMEM_IOCTL));
   put64(p, off + FOPS_COMPAT_IOCTL_OFF, text_addr(ASHMEM_COMPAT_IOCTL));
   put64(p, off + FOPS_MMAP_OFF, text_addr(ASHMEM_MMAP));

