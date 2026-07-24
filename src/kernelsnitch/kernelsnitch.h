@@ -248,7 +248,7 @@ static void *__mm_leak(void *arg)
             }
         }
     }
-    pr_info("[% 3zd] thread done, tested %zu candidates\n", range->id, candidates_tested);
+    if (ks->verbose) pr_info("[% 3zd] thread done, tested %zu candidates\n", range->id, candidates_tested);
     free(mm_leak_arg);
     return 0;
 }
