@@ -23,6 +23,11 @@
 #include <android/log.h>
 #endif
 
+/* Persistent, crash-surviving file sink for pr_* output (defined in util.c;
+   linked into preload.so). The pr_* macros below tee every line into it so logs
+   survive the forked child's fd-install clobber and app crashes. flush!=0 fsyncs. */
+void poc_flog(int flush, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+
 #ifndef HIDEMINMAX
 #define MAX(X,Y) (((X) > (Y)) ? (X) : (Y))
 #define MIN(X,Y) (((X) < (Y)) ? (X) : (Y))
@@ -112,16 +117,20 @@
 #else
 #define pr_error(fmt, ...) do { \
         printf(COLOR_RED "[!] " COLOR_DEFAULT fmt, ##__VA_ARGS__); \
+        poc_flog(1, "[!] " fmt, ##__VA_ARGS__); \
         exit(-1); \
     } while (0)
 #define pr_warning(fmt, ...) do { \
         printf(COLOR_RED "[-] " COLOR_DEFAULT fmt, ##__VA_ARGS__); \
+        poc_flog(1, "[-] " fmt, ##__VA_ARGS__); \
     } while (0)
 #define pr_info(fmt, ...) do { \
         printf(COLOR_YELLOW "[*] " COLOR_DEFAULT fmt, ##__VA_ARGS__); \
+        poc_flog(0, "[*] " fmt, ##__VA_ARGS__); \
     } while (0)
 #define pr_success(fmt, ...) do { \
         printf(COLOR_GREEN "[+] " COLOR_DEFAULT fmt, ##__VA_ARGS__); \
+        poc_flog(1, "[+] " fmt, ##__VA_ARGS__); \
     } while (0)
 #endif
 #endif

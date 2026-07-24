@@ -1,5 +1,99 @@
 #include "common.h"
 #include "kernelsnitch/kernelsnitch.h"
+#include <stdarg.h>
+
+/* Persistent, crash-surviving log sink (see kernelsnitch/utils.h pr_* macros).
+   The forked slide child's stdout/logd fd is clobbered by the pselect fd
+   install, so its lines never reach the app; an untrusted_app is also often
+   denied READ_LOGS. Tee every pr_* line into a file the app can read back:
+   $POC_LOG_FILE (the launcher sets it to <filesDir>/preload.log), else derived
+   from the loaded libpreload.so mapping, else /data/local/tmp. Opened once on a
+   high fd (>=900) so the fd-install dup2 loops (fds 0..~449) cannot clobber it,
+   inherited across fork; O_APPEND accumulates. write() survives a userspace
+   crash; flush!=0 fsyncs. Defined here (linked into preload.so only). */
+static int poc_log_fd = -1; /* -1 = unopened, -2 = permanently failed */
+
+static void poc_log_build_path(char *out, size_t outsz) {
+  out[0] = 0;
+  const char *env = getenv("POC_LOG_FILE");
+  if (env && env[0]) {
+    snprintf(out, outsz, "%s", env);
+    return;
+  }
+  FILE *mf = fopen("/proc/self/maps", "r");
+  if (mf) {
+    char line[512];
+    while (fgets(line, sizeof(line), mf)) {
+      if (!strstr(line, "libpreload.so")) {
+        continue;
+      }
+      char *slash = strchr(line, '/');
+      if (!slash) {
+        continue;
+      }
+      size_t L = strlen(slash);
+      while (L && (slash[L - 1] == '\n' || slash[L - 1] == '\r')) {
+        slash[--L] = 0;
+      }
+      char *bn = strrchr(slash, '/');
+      if (bn && (size_t)(bn - slash) + sizeof("/preload.log") < outsz) {
+        int dirlen = (int)(bn - slash);
+        snprintf(out, outsz, "%.*s/preload.log", dirlen, slash);
+      }
+      break;
+    }
+    fclose(mf);
+  }
+  if (!out[0]) {
+    snprintf(out, outsz, "/data/local/tmp/aristotle_preload.log");
+  }
+}
+
+void poc_flog(int flush, const char *fmt, ...) {
+  if (poc_log_fd == -2) {
+    return;
+  }
+  if (poc_log_fd < 0) {
+    char path[256];
+    poc_log_build_path(path, sizeof(path));
+    int fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+    if (fd < 0) {
+      poc_log_fd = -2;
+      return;
+    }
+    int hi = fcntl(fd, F_DUPFD_CLOEXEC, 900);
+    if (hi >= 0) {
+      close(fd);
+      fd = hi;
+    }
+    poc_log_fd = fd;
+  }
+  char buf[1024];
+  struct timespec ts;
+  clock_gettime(CLOCK_REALTIME, &ts);
+  int n = snprintf(buf, sizeof(buf), "%ld.%03ld %d ", (long)ts.tv_sec,
+                   ts.tv_nsec / 1000000, (int)getpid());
+  if (n < 0) {
+    n = 0;
+  }
+  if (n > (int)sizeof(buf)) {
+    n = (int)sizeof(buf);
+  }
+  va_list ap;
+  va_start(ap, fmt);
+  int m = vsnprintf(buf + n, sizeof(buf) - (size_t)n, fmt, ap);
+  va_end(ap);
+  if (m > 0) {
+    n += m;
+    if (n > (int)sizeof(buf)) {
+      n = (int)sizeof(buf);
+    }
+  }
+  (void)!write(poc_log_fd, buf, (size_t)n);
+  if (flush) {
+    fsync(poc_log_fd);
+  }
+}
 
 static struct kernelsnitch_shared_state *ks;
 static size_t mm_objs_per_slab;
