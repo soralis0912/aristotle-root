@@ -407,6 +407,8 @@ pid_t clone_leak_child(void);
 int open_memfd(pid_t child);
 void kill_child(pid_t child);
 void close_reclaim_sockets(void);
+int scratch_write_diag_enabled(void);
+void scratch_diag_readback(uint64_t expect);
 void setup_kernelsnitch(void);
 int kernelsnitch_collision_count(void);
 int kernelsnitch_collisions_ready(void);

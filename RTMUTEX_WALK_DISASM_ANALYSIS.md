@@ -217,3 +217,67 @@ Apply the method fix first — it is required regardless AND disambiguates:
 configfs_read_bin_file 0x6b4f90 (.cfi_jt 0x182ee20); configfs_write_bin_file 0x6b5208 (.cfi_jt
 0x182f330); configfs_bin_file_operations table 0x2157220; ashmem_fops 0x229d120; ashmem_misc 0x28c6670
 (.fops @ +0x10 = 0x28c6680). EINVAL @ configfs_write_bin_file 0x6b53ac (ppos<0 only).
+
+## Why the swap write doesn't land (build 51a9d15: survives, landed=0, EINVAL)
+
+Two of the candidate causes are RULED OUT by disasm/section evidence:
+
+### (1b) "timeout cleared pi_blocked_on → walk never ran" — FALSE. The walk runs.
+- `remove_waiter` clears pi_blocked_on via `str xzr,[x20,#2200]` @0x1e72c4 (x20=`current`, 2200=0x898).
+- On the normal requeued-timeout path, `futex_wait_requeue_pi` DOES reach `rt_mutex_cleanup_proxy_lock`
+  (bl 0x1e9cd8 @0x292418, guarded by `cbz w23` @0x29240c: skipped only when ret==0/acquired) →
+  remove_waiter → clears the WAITER's pi_blocked_on. So a *clean requeued timeout* would clear it.
+- BUT the exploit's `CMP_REQUEUE_PI` returns **EDEADLK** (the requeue itself detects the
+  waiter→f_pi_target→owner→f_pi_chain→waiter cycle). On that path `__rt_mutex_start_proxy_lock`
+  (0x1e989c): `try_to_take_rt_mutex`(0x1e98c8) → `task_blocks_on_rt_mutex`(0x1e98e8) sets
+  **waiter_task->pi_blocked_on = &rt_waiter** BEFORE returning -EDEADLK; the subsequent cleanup
+  `remove_waiter` runs in the MAIN thread's context, so `current->pi_blocked_on` = the MAIN thread's,
+  NOT the waiter's. The waiter's `pi_blocked_on` is left **dangling** at the (about-to-be-freed) stack
+  `rt_waiter`. This is exactly why the shift matters: at shift=0 the consumer's sched_setattr walk
+  derefs a mis-overlaid waiter (waiter->lock @rt_waiter+0x38 = write_target, a .data alias treated as
+  an rt_mutex → garbage owner → **Oops**); at shift=-2 waiter->lock = fake_lock (our page) → survives.
+  **⇒ The walk is running. SIGALRM/EINTR is NOT required** (contradicts the (1b)/popsicle hypothesis).
+
+### rodata_full RO on the write target — FALSE. The .data linear alias is RW.
+Section map (symbols): `_stext=0x10000, __start_rodata=_etext=0x1a30000, __end_rodata=0x2459000,
+__init_begin=0x2460000, __init_end=_data=0x2760000, _edata=0x296ca00, __bss_start=0x296d000`.
+`ashmem_misc` @0x28c6670 is inside **.data [0x2760000, 0x296ca00)**. arm64 `mark_linear_text_alias_ro`
+marks only the linear alias of `[_stext, __init_begin) = [0x10000, 0x2460000)` (text+rodata) RO; .data
+is above __init_end, so its linear alias stays **RW**. The store to `ffffff80028c6680`
+(= __va(PHYS_OFFSET+0x28c6680), the correct alias of &ashmem_misc.fops) does not fault. No MTE issue
+either: linear addrs carry tag 0xff (KASAN_HW_TAGS match-all). ⇒ if the dequeue store executes, it
+lands.
+
+### So: walk runs + target writable, yet landed=0. Remaining causes (ranked)
+Static trace says the walk reaches [7] rt_mutex_dequeue (prio 3 ≠ task->prio 139 ⇒ requeue needed;
+lock==next_lock==fake_lock; owner=fake_task≠top_task ⇒ no deadlock-exit) and rb_erase hits Case-2
+(rb_right=0, rb_left=write_target) → `*write_target = fake_fops`. It should land. Since it doesn't:
+
+1. **Reclaim off by a small (±8B) amount** (MEDIUM). My frame-sum gives EXACT overlap (both objects at
+   SP_DIV−0x210 ⇒ shift −2), but if any one frame/offset is off by a single slot the walk still
+   *survives* (waiter->lock happens to land on a valid page) while tree_entry.rb_left is read from the
+   wrong long ⇒ the store goes to the wrong address / a different rb_erase case ⇒ ashmem_misc.fops
+   untouched. Cheap test: also try **shift −1 and −3**.
+2. **The reclaimed pi_blocked_on target isn't our overlay bytes in [7]'s view** (MEDIUM): e.g. do_select
+   or a prior burst-iteration's `rt_mutex_enqueue` (which sets the fake waiter's rb_left=0,
+   rb_right=self) mutated the tree_entry before the *first* value-carrying dequeue, so Case-2 never
+   fires with rb_left=write_target.
+3. write lands but fresh-open still real ashmem — RULED OUT (EINVAL is definitive for real ashmem).
+
+### Decisive NON-circular diagnostic (recommended before any more guessing)
+Point `write_target` at a **scratch qword inside the sprayed page_base** (not ashmem_misc.fops) and set
+`write_value` to a magic constant; run the route; read that scratch back via the **sk_buff recv path**
+the exploit already uses to build/verify the sprayed page (NOT via configfs/ashmem).
+- scratch == magic ⇒ the walk reaches [7] and writes correctly; the bug is specific to the
+  ashmem_misc.fops target address/overlay-value on-device (re-derive ASHMEM_MISC_FOPS and the tree_left
+  word actually planted).
+- scratch unchanged ⇒ the dequeue isn't producing the write; dump the reclaimed `pi_blocked_on`
+  target bytes (via the same sk_buff read of page_base / a stack peek) to see what tree_entry actually
+  holds, and sweep shift ∈ {−1,−2,−3}.
+
+### Bottom line
+Highest-confidence conclusions: **the walk runs (no SIGALRM needed)** and **the target is writable (not
+rodata)**. The write not landing is a placement/overlay-content problem at the dequeue; the scratch
+read-back localizes it in one device run. RVAs: task_blocks_on_rt_mutex 0x1e6a80;
+__rt_mutex_start_proxy_lock 0x1e989c; rt_mutex_cleanup_proxy_lock 0x1e9cd8; remove_waiter 0x1e7204
+(pi_blocked_on clear @0x1e72c4); futex cleanup call @0x292418.

