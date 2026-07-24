@@ -5,8 +5,11 @@
  * Generated from the oppo-ghostlock (5.10.236) target.h template; device values
  * replaced with aristotle MEASURED kallsyms + gdb-verified struct offsets.
  * NOTE: (1) P0_KERNEL_PHYS_LOAD delta=0 CONFIRMED (vendor_boot kernel_addr==/memory base==0x40000000, Image flags bit3=0, text_offset=0);
- * (2) TASK_PID/TGID/REAL_PARENT/ATOMIC_FLAGS/TASKS/SECCOMP kept from oppo 5.10.236
- *     and NOT yet verified for 5.10.136 (verify via qemu/ gdb);
+ * (2) qemu-gdb VERIFIED: TASK_COMM 0x790, TASK_PID 0x5c8, TASK_TGID 0x5cc,
+ *     TASK_TASKS 0x4c8, TASK_REAL_CRED 0x778, TASK_CRED 0x780, task_group 0x310,
+ *     CRED_CAPS 0x30, selinux_state 0x2a25b90. Still UNVERIFIED (root stage only):
+ *     TASK_REAL_PARENT/ATOMIC_FLAGS/SECCOMP, CRED_UID (needs non-root task), and
+ *     pipe/fops/struct_page offsets — kept from oppo, verify via qemu/ before root.
  * (3) SLIDE_RANDOM_BOOT_ID_DATA from the popsicle-era measurement (verify). */
 
 #define BUILD_VARIANT_LABEL "aristotle_V14.0.3.0.TMFJPKD_12.0"
@@ -133,14 +136,14 @@
 #define CFG_CB_MAX_SIZE_OFF 100
 
 #define MM_OWNER_OFF 1032
-#define TASK_PID_OFF 0x618
-#define TASK_TGID_OFF 0x61c
+#define TASK_PID_OFF 0x5c8   /* gdb-verified: init pid=1 @0x5c8 (was 0x618 oppo) */
+#define TASK_TGID_OFF 0x5cc   /* gdb-verified: init tgid=1 @0x5cc */
 #define TASK_REAL_PARENT_OFF 0x628
 #define TASK_ATOMIC_FLAGS_OFF 0x5d8
 #define TASK_REAL_CRED_OFF 0x778
 #define TASK_CRED_OFF 0x780
 #define TASK_COMM_OFF 0x790
-#define TASK_TASKS_OFF 0x550
+#define TASK_TASKS_OFF 0x4c8   /* gdb-verified: tasks list -> comm="init" (was 0x550 oppo) */
 #define TASK_THREAD_INFO_FLAGS_OFF 0x00
 #define TASK_SECCOMP_OFF 0x8e8
 #define TASK_PI_BLOCKED_ON_OFF 0x898   /* ✓ IDA verified: rt_mutex_adjust_prio_chain LDR X28, [X19,#0x898] */
