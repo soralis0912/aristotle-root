@@ -274,12 +274,14 @@ void run_main_route_threads(void) {
    * kernel, this line (fsync'd) is the last durable record. */
   pr_success("ckpt: route CMP_REQUEUE_PI ret=%ld errno=%d\n", rq, errno);
 
-  /* Signal the requeued waiter ~50ms in so it exits WAIT_REQUEUE_PI via EINTR
-   * (handler bumps priority) instead of the clean timeout that NULLs
-   * pi_blocked_on. This is what actually creates the dangling waiter. */
-  usleep(env_int_range("SIGALRM_DELAY_USEC", 50000, 0, 5000000));
-  int pkret = pthread_kill(waiter, SIGALRM);
-  pr_success("ckpt: route pthread_kill(waiter,SIGALRM) ret=%d\n", pkret);
+  /* SIGALRM REMOVED (confounder): source + QEMU proved the dangling pi_blocked_on
+   * survives the clean timeout on its own (futex_requeue EDEADLK leaves the waiter
+   * blocked -> handle_early_requeue_pi_wakeup goto-out -> skips the cleanup that
+   * would NULL pi_blocked_on). The old pthread_kill(SIGALRM) never produced EINTR
+   * (ERESTARTNOINTR restarts to full timeout) AND its setpriority handler fired an
+   * early rt_mutex_adjust_pi(waiter) on the RESIDUAL pre-pselect rt_waiter, a
+   * confounder. Let the waiter time out cleanly; the walk runs off the dangling. */
+  (void)waiter;
 
   while (!atomic_load(&route_done)) {
     if (atomic_exchange(&pipe_prepare_request, 0)) {
