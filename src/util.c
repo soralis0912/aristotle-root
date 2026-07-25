@@ -390,12 +390,13 @@ int bootid_proof_active;
 char bootid_proof_before[64];
 
 int bootid_write_proof_enabled(void) {
-  /* Default ON: the APK has no shell to set env, and attempt 1 of the route is
-   * cheap to spend on a definitive answer. Aims the rb-erase store at
+  /* Default ON: the APK has no shell to set env. Aims the rb-erase store at
    * &sysctl_bootid instead of &ashmem_misc.fops; /proc/sys/kernel/random/boot_id
    * changing is direct proof the dequeue store executed (harmless: proc_do_uuid
    * only regenerates when uuid[8]==0, which our 8 bytes over uuid[0..7] leaves
-   * alone). Attempts 2+ re-groom with the real fops target and go for root. */
+   * alone). While ON, the route never attempts the fops swap -- the fake fops
+   * still holds unslid (PXN linear-alias) text pointers, so a landed swap would
+   * panic misc_open. Turn OFF once the KASLR base is really leaked. */
   return env_flag("BOOTID_WRITE_PROOF", 1);
 }
 

