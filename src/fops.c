@@ -353,11 +353,12 @@ void do_pselect_fake_lock_route(void) {
 
     atomic_store(&punch_consume_go, route_attempt);
     atomic_store(&pselect_armed, 1);
-    /* Re-enter pselect in short slices until a walk is actually observed
-     * (consumer_success>0) or the budget runs out, instead of betting the whole
-     * attempt on one 5s window. First device run: the walk landed 1ms AFTER
-     * pselect had returned, so the overlay was gone -- walks=0/walk_wrote=0
-     * despite walked=1. Slicing keeps the overlay installed ~continuously.
+    /* Re-enter pselect in LONG (PSELECT_SLICE_MSEC) slices for the whole budget,
+     * so the overlay is installed essentially continuously while the consumer
+     * fires its ~200 walks. Device run #2: a single walk 100ms after arming (timer
+     * slack) landed exactly on the old 100ms slice boundary -- the overlay was
+     * gone and nothing was stored, even though QEMU on this very kernel stores
+     * correctly when the walk runs while do_select is blocked.
      * NOTHING in the gap between slices may syscall: the dangling pi_blocked_on
      * points at the kernel-stack slot core_sys_select left the overlay in, and
      * only another deep syscall would clobber it. fd_set copies are pure
@@ -376,8 +377,11 @@ void do_pselect_fake_lock_route(void) {
       ret = pselect(PSELECT_ROUTE_NFDS, &in, &out, &ex, &slice, NULL);
       saved_errno = errno;
       pselect_calls++;
-      if (atomic_load(&consumer_success) > 0 ||
-          atomic_load(&punch_consume_stop)) {
+      /* Keep the window open until the consumer has finished its whole burst
+       * (it clears punch_consume_go) -- NOT after the first walk, or we would
+       * close the overlay window again after a single shot. */
+      if (atomic_load(&punch_consume_stop) ||
+          atomic_load(&punch_consume_go) != route_attempt) {
         break;
       }
       /* A hard error (not a signal) would spin the slices out in microseconds

