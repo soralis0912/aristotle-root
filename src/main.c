@@ -244,9 +244,13 @@ void *consumer_thread(void *arg __attribute__((unused))) {
       errno = 0;
       int nice_before = getpriority(PRIO_PROCESS, tid);
       atomic_fetch_add(&consumer_calls, 1);
+      /* armed_pre/armed_post bracket the call: both 1 == the walk provably ran
+       * while the waiter was inside pselect with the overlay installed. */
+      int armed_pre = atomic_load(&pselect_armed);
       errno = 0;
       long sched_ret = sched_setattr_tid(tid, consumer_nice);
       int sched_errno = errno;
+      int armed_post = atomic_load(&pselect_armed);
       errno = 0;
       int nice_after = getpriority(PRIO_PROCESS, tid);
       /* The nice value actually CHANGING is the only proof that
@@ -257,10 +261,10 @@ void *consumer_thread(void *arg __attribute__((unused))) {
       if (walked) {
         atomic_fetch_add(&consumer_success, 1);
       }
-      pr_info("consumer walk seq=%d ret=%ld errno=%d nice=%d->%d want=%d "
-              "walked=%d tid=%d fake_lock=%016llx fake_w0=%016llx\n",
-              seq, sched_ret, sched_errno, nice_before, nice_after,
-              consumer_nice, walked, tid, fake_lock, fake_w0);
+      pr_success("ckpt: consumer walk seq=%d ret=%ld errno=%d nice=%d->%d "
+                 "want=%d walked=%d armed=%d/%d tid=%d\n",
+                 seq, sched_ret, sched_errno, nice_before, nice_after,
+                 consumer_nice, walked, armed_pre, armed_post, tid);
       calls_this_seq++;
       if (calls_this_seq >= CONSUMER_MAX_CALLS) {
         break;

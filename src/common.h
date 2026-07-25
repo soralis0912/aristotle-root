@@ -156,6 +156,11 @@
 #define PSELECT_CONSUMER_BURST_CALLS 1
 #define PSELECT_ENTER_DELAY_USEC 50000
 #define PSELECT_TIMEOUT_SEC 5
+/* One pselect() slice. The route re-enters pselect back-to-back for
+ * PSELECT_TIMEOUT_SEC total so the fake-waiter overlay is installed
+ * ~continuously and the consumer's walk cannot miss the window (device run 1:
+ * the walk fired 1ms after a single 5s window had already closed). */
+#define PSELECT_SLICE_MSEC 100
 #define PSELECT_WRITE_SHAPE_DEFAULT 1
 #define ROUTE_WAIT_SECONDS 8
 #define EARLY_PIPE_PREPARE 0
